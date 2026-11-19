@@ -1,8 +1,12 @@
-# Dikte Web
+# Dictation Web
 
-[English](README.md)
+[English](README.md) · [Son sürüm](https://github.com/eco-null/dictation-web/releases/latest) · [Docker kurulumu](#docker-ile-çalıştırma) · [Ekran görüntüleri](#ekran-görüntüleri)
 
-Dikte Web, mikrofon kayıtlarını ve ses veya video dosyalarını yazıya çevirmek için kendi sunucunuzda çalıştırabileceğiniz tek kullanıcılı bir uygulamadır. [Yusuf İpek’in Dikte projesini](https://github.com/yusufipk/dikte) temel alır ve FastAPI, Jinja ve JavaScript ile tarayıcıda çalışır.
+[Yusuf İpek’in Dikte projesini](https://github.com/yusufipk/dikte) kendi sunucunuzda çalıştırabileceğiniz tek kullanıcılı bir web uygulamasına uyarladım. Tarayıcıdan ses kaydedin, ses veya video dosyasını yazıya çevirin ya da toplantı kaydından Markdown tutanak oluşturun.
+
+[![Kayıt kontrolleri ve tamamlanmış transkriptin yer aldığı dikte ekranı](docs/screenshots/dictation.webp)](docs/screenshots/dictation.webp)
+
+## Özellikler
 
 - **Dikte** ekranında mikrofonu kaydedebilir, duraklatıp devam ettirebilir, süreyi ve ses dalgasını görebilirsiniz. Ekran odaktayken Ctrl+Space kaydı başlatır veya bitirir. Sonucu kopyalayabilir, ham metinle karşılaştırabilir veya TXT olarak indirebilirsiniz.
 - **Yazım** için özel adları ve terimleri sözlüğe ekleyin. Ayarlar → Temizleme bölümünde yazım talimatlarını ve isteğe bağlı çeviri dilini seçin.
@@ -11,11 +15,11 @@ Dikte Web, mikrofon kayıtlarını ve ses veya video dosyalarını yazıya çevi
 - **Asistan** yazılı soruları veya Dikte ekranından gönderilen sesli soruları yanıtlar. Konuşmayı ayarlanan süre boyunca hatırlar. Bir istek için bulut modelini ayrıca seçebilirsiniz.
 - **Geçmiş** tam transkripti, tarihi ve modeli arar. Ses saklama açıksa geçmişten ses kaydı da indirilir. Geçmiş girdisi silindiğinde veya sınır nedeniyle budandığında ilgili ses kaydı kaldırılır.
 
-**Ayarlar → Temalar** bölümünde Koyu, Açık, Orman Yeşili ve Çelik Mavi seçenekleri var. Seçim anında görünür ve kaydedildiğinde korunur.
+Arayüz Türkçe ve İngilizce kullanılabilir. **Ayarlar → Temalar** bölümünde Koyu, Açık, Orman Yeşili ve Çelik Mavi seçenekleri var. Seçim anında görünür ve kaydedildiğinde korunur.
 
 ## Docker ile çalıştırma
 
-Yeni kurulum için proje dizinindeki `.env` dosyasına aşağıdaki değerleri yazın. Adlandırılmış Docker birimi, kapsayıcı güncellemelerinde ayarları, geçmişi ve modelleri korur.
+Yeni kurulum için son sürümden [compose.yaml](https://github.com/eco-null/dictation-web/releases/latest/download/compose.yaml) dosyasını indirin. Yanında bir `.env` dosyası oluşturup kendi parolanızı ve ayarları, geçmişi ve modelleri saklayacak birim adını yazın.
 
 ```dotenv
 DIKTE_WEB_PASSWORD=kendi-parolanizi-yazin
@@ -29,7 +33,7 @@ docker compose up -d
 
 <http://localhost:8245> adresini açın. HTTPS kullanırken `DIKTE_COOKIE_SECURE=1` bırakın. Uygulamayı HTTPS üzerinden sunmak için ters proxy veya Cloudflare Tunnel kullanabilirsiniz. Tarayıcıda mikrofon erişimi HTTPS veya localhost gerektirir.
 
-Compose `ghcr.io/eco-null/dictation-web:latest` imajını çeker. Belirli bir sürümü sabitlemek için `DIKTE_IMAGE` değerini ayarlayın. Yerel kaynak değişikliklerini Docker’da denemek için yerel imajı bir Compose override ile seçin veya aşağıdaki gibi kaynaktan çalıştırın.
+Sürümden indirilen dosya, ilgili imaj sürümünü sabitler. Depodaki `docker-compose.yml` ise `ghcr.io/eco-null/dictation-web:latest` etiketini takip eder. İmajı elle seçmek için `DIKTE_IMAGE` değerini ayarlayın.
 
 Mevcut kurulumu güncellerken veri bağını ve Compose proje adını koruyun. `DIKTE_DATA_DIR` boşsa eski kurulum yolu `/DATA/AppData/dikte-web` kullanılır. Farklı bir ana makine dizini seçerseniz önce kapsayıcıdaki `dikte` kullanıcısına yazma izni verin. Varsayılan 8245 portu loopback adresine bağlıdır. Adresi veya portu `DIKTE_BIND_ADDRESS` ve `DIKTE_PORT` ile değiştirebilirsiniz. Kendi parolanızı girin veya kapsayıcıdaki `/data/share/dikte/web_password` dosyasından üretilen parolayı okuyun.
 
@@ -67,6 +71,26 @@ Docker’da ayarlar `/data/config`, diğer veriler `/data/share` altında tutulu
 - `GET /api/meetings/{base}/download` tutanağı indirir. `POST /api/meetings/{base}/retry` tekrar dener.
 - `POST /api/agent`, `question` ve isteğe bağlı `provider` ile `model` alanlarını alır. `GET /api/history` dikteleri listeler. `GET /api/settings` anahtarları maskeler ve `POST /api/settings` değişen alanları kabul eder.
 - `GET /healthz` herkese açıktır. Diğer API uçları imzalı oturum çerezi gerektirir.
+
+## Ekran görüntüleri
+
+Galeride İngilizce arayüz ve örnek kayıtlar yer alıyor. Görüntüleri tam boy açmak için üzerlerine tıklayın.
+
+| Dosya transkripsiyonu | Toplantılar |
+| --- | --- |
+| [![Ses yükleme ve TXT ile SRT olarak indirilebilen zaman damgalı metin](docs/screenshots/files.webp)](docs/screenshots/files.webp) | [![Toplantı yükleme formu ve kayıtlı toplantılar](docs/screenshots/meetings.webp)](docs/screenshots/meetings.webp) |
+
+| Toplantı tutanağı | Asistan |
+| --- | --- |
+| [![Toplantı özeti, kararlar, görevler ve Markdown indirme](docs/screenshots/meeting-notes.webp)](docs/screenshots/meeting-notes.webp) | [![Asistanın soru ve yanıtı gösteren konuşma alanı](docs/screenshots/assistant.webp)](docs/screenshots/assistant.webp) |
+
+| Geçmiş | Ayarlar |
+| --- | --- |
+| [![Arama, açılmış transkript ve ses kaydı indirme](docs/screenshots/history.webp)](docs/screenshots/history.webp) | [![Tema seçenekleri ve transkripsiyon sağlayıcısı ayarları](docs/screenshots/settings.webp)](docs/screenshots/settings.webp) |
+
+| Giriş | Mobil dikte ve Açık tema |
+| --- | --- |
+| [![Parolayla giriş ekranı](docs/screenshots/sign-in.webp)](docs/screenshots/sign-in.webp) | <a href="docs/screenshots/dictation-mobile.webp"><img src="docs/screenshots/dictation-mobile.webp" alt="Telefonda Açık tema ile dikte ekranı" width="220"></a> |
 
 ## Geliştirme ve orijinal proje
 

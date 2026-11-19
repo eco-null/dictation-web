@@ -1,8 +1,12 @@
-# Dikte Web
+# Dictation Web
 
-[Türkçe](README.tr.md)
+[Türkçe](README.tr.md) · [Latest release](https://github.com/eco-null/dictation-web/releases/latest) · [Docker setup](#run-with-docker) · [Screenshots](#screenshots)
 
-Dikte Web is a single-user, self-hosted workspace for turning microphone recordings and audio or video files into text. It is based on [Yusuf İpek’s Dikte](https://github.com/yusufipk/dikte) and runs in a browser with FastAPI, Jinja and JavaScript.
+I adapted [Yusuf İpek’s Dikte](https://github.com/yusufipk/dikte) into a single-user app you can run on your own server. Record from your browser, transcribe an audio or video file, or turn a meeting recording into Markdown notes.
+
+[![Dictation screen with the recording controls and a completed transcript](docs/screenshots/dictation.webp)](docs/screenshots/dictation.webp)
+
+## Features
 
 - **Dictation** records from your microphone with a timer, pause and resume, and a waveform. Press Ctrl+Space while the workspace has focus to start or finish. Copy the transcript, compare it with the original, or download it as TXT.
 - **Writing** uses a dictionary of names and terms as a recognition hint. Set writing instructions or a translation language in Settings → Cleanup.
@@ -11,11 +15,11 @@ Dikte Web is a single-user, self-hosted workspace for turning microphone recordi
 - **Assistant** accepts written questions or voice questions through the Dictation screen. It keeps a configurable conversation history. You can override the hosted model for a request.
 - **History** searches full transcripts, dates and models. When audio retention is enabled, the original audio is available there. Deleting or trimming an entry also removes its retained audio.
 
-**Settings → Themes** offers Dark, Light, Forest Green and Steel Blue. The theme previews immediately and is remembered after saving.
+The interface is available in English and Turkish. **Settings → Themes** offers Dark, Light, Forest Green and Steel Blue. The theme previews immediately and is remembered after saving.
 
 ## Run with Docker
 
-For a new installation, configure these values in the project’s `.env` file. The named Docker volume keeps settings, history, and models across container updates.
+For a new installation, download [compose.yaml](https://github.com/eco-null/dictation-web/releases/latest/download/compose.yaml) from the latest release. Create a `.env` file next to it with your own password and a named volume for settings, history, and models.
 
 ```dotenv
 DIKTE_WEB_PASSWORD=replace-with-your-password
@@ -29,7 +33,7 @@ docker compose up -d
 
 Open <http://localhost:8245>. Keep `DIKTE_COOKIE_SECURE=1` when using HTTPS. A reverse proxy or a Cloudflare Tunnel can expose the loopback service over HTTPS. The browser requires HTTPS or localhost for microphone access.
 
-Compose pulls `ghcr.io/eco-null/dictation-web:latest`. Set `DIKTE_IMAGE` to a versioned tag to pin a release. To test local source changes using Docker, build a local image and name it in a Compose override, or run from source below.
+The release file pins the image for that version. The repository’s `docker-compose.yml` tracks `ghcr.io/eco-null/dictation-web:latest`. Set `DIKTE_IMAGE` to choose an image explicitly.
 
 For an existing installation, keep its current data mount and Compose project. The historical bind mount is `/DATA/AppData/dikte-web` when `DIKTE_DATA_DIR` is unset. If you choose a different bind path, make it writable by the container’s `dikte` user first. The port remains 8245, bound to loopback by default. Set `DIKTE_BIND_ADDRESS` and `DIKTE_PORT` to change the bind address or port. Supply your own password or read the generated password from `/data/share/dikte/web_password` in the container.
 
@@ -67,6 +71,26 @@ In Docker the config root is `/data/config` and the data root is `/data/share`. 
 - `GET /api/meetings/{base}/download` downloads minutes. `POST /api/meetings/{base}/retry` starts a retry.
 - `POST /api/agent` accepts `question` and optional `provider` and `model`. `GET /api/history` lists completed dictations. `GET /api/settings` exposes masked settings and `POST /api/settings` accepts changed fields.
 - `GET /healthz` is public. Other API routes require a signed login cookie.
+
+## Screenshots
+
+The gallery shows the English interface with example data. Click an image to open it at full size.
+
+| File transcription | Meetings |
+| --- | --- |
+| [![Audio upload and a timestamped transcript with TXT and SRT downloads](docs/screenshots/files.webp)](docs/screenshots/files.webp) | [![Meeting upload form and saved meeting list](docs/screenshots/meetings.webp)](docs/screenshots/meetings.webp) |
+
+| Meeting notes | Assistant |
+| --- | --- |
+| [![Meeting summary, decisions, action items, and Markdown export](docs/screenshots/meeting-notes.webp)](docs/screenshots/meeting-notes.webp) | [![Assistant conversation with a question and answer](docs/screenshots/assistant.webp)](docs/screenshots/assistant.webp) |
+
+| History | Settings |
+| --- | --- |
+| [![Searchable history with an expanded transcript and audio download](docs/screenshots/history.webp)](docs/screenshots/history.webp) | [![Theme choices and transcription provider settings](docs/screenshots/settings.webp)](docs/screenshots/settings.webp) |
+
+| Sign-in | Mobile dictation in the Light theme |
+| --- | --- |
+| [![Password sign-in screen](docs/screenshots/sign-in.webp)](docs/screenshots/sign-in.webp) | <a href="docs/screenshots/dictation-mobile.webp"><img src="docs/screenshots/dictation-mobile.webp" alt="Dictation on a phone in the Light theme" width="220"></a> |
 
 ## Development and upstream
 
