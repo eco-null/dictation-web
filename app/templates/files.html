@@ -1,74 +1,23 @@
 {% extends "base.html" %}
-{% block head %}<meta http-equiv="Cache-Control" content="no-store">{% endblock %}
+{% from "_result.html" import transcript with context %}
+{% from "_upload.html" import upload with context %}
+{% block title %}{{ t('Files') }}{% endblock %}
 {% block content %}
-<section class="card">
-  <h1>{{ t("Files") }}</h1>
-  <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="{{ t('Choose a file to transcribe') }}">
-    <svg class="icon" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-    <p class="muted">{{ t("Drop an audio or video file, or click to browse") }}</p>
-    <input type="file" id="file" name="file" accept="audio/*,video/*" required hidden form="file-form">
-  </div>
-  <form id="file-form">
-    <div class="row">
-      <label class="check"><input type="checkbox" name="timestamps"> {{ t("Timestamps") }}</label>
-      <label class="check"><input type="checkbox" name="cleanup" checked> {{ t("Cleanup") }}</label>
-    </div>
-    <button class="btn btn-primary" type="submit" id="upload-btn">{{ t("Upload") }}</button>
-  </form>
-  <div class="progress" id="progress" hidden><div class="progress-bar" id="progress-bar"></div></div>
-  <p id="stage" class="stage" role="status"></p>
-  <div id="result" class="result" hidden>
-    <textarea id="text" readonly rows="14"></textarea>
-    <div class="row">
-      <button class="btn" data-copy data-target="#text">{{ t("Copy") }}</button>
-      <button class="btn" data-download data-job-id="" data-fmt="txt">{{ t("Download") }} .txt</button>
-      <button class="btn" data-download data-job-id="" data-fmt="srt">.srt</button>
-    </div>
-  </div>
-</section>
-<script>
-  const drop = document.getElementById("dropzone");
-  const file = document.getElementById("file");
-  drop.addEventListener("click", () => file.click());
-  drop.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      file.click();
-    }
-  });
-  drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
-  drop.addEventListener("dragleave", () => drop.classList.remove("over"));
-  drop.addEventListener("drop", (e) => {
-    e.preventDefault();
-    drop.classList.remove("over");
-    if (e.dataTransfer.files.length) file.files = e.dataTransfer.files;
-  });
-  document.getElementById("file-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const stage = document.getElementById("stage");
-    if (!file.files.length) {
-      stage.textContent = "Choose a file to transcribe first.";
-      return;
-    }
-    const fd = new FormData(e.target);
-    const bar = document.getElementById("progress-bar");
-    document.getElementById("progress").hidden = false;
-    stage.textContent = "Uploading…";
-    const resp = await fetch("/api/files/transcribe", { method: "POST", body: fd });
-    if (resp.status === 409) {
-      stage.textContent = "Busy, one job at a time";
-      document.getElementById("progress").hidden = true;
-      return;
-    }
-    if (!resp.ok) {
-      stage.textContent = (await resp.json()).detail || resp.status;
-      document.getElementById("progress").hidden = true;
-      return;
-    }
-    const { job_id } = await resp.json();
-    for (const b of document.querySelectorAll("[data-download]")) b.dataset.jobId = job_id;
-    const resultBox = document.getElementById("result");
-    pollJob(job_id, { stage, resultBox, textEl: document.getElementById("text") });
-  });
-</script>
+<header class="page-head"><div><h1>{{ t('Files') }}</h1><p>{{ t('Turn an audio or video file into text or subtitles.') }}</p></div></header>
+<div class="studio">
+  <section class="card">
+    <header class="panel-head"><h2>{{ t('Audio or video') }}</h2></header>
+    <form class="panel-body stack" data-job-form action="/api/files/transcribe" method="post" enctype="multipart/form-data">
+      {{ upload() }}
+      <div class="upload-options">
+        <label class="check"><input type="checkbox" name="timestamps" {% if conf.file_timestamps %}checked{% endif %}> {{ t('Include timestamps and SRT') }}</label>
+        <label class="check"><input type="checkbox" name="cleanup" {% if conf.file_cleanup %}checked{% endif %}> {{ t('Clean up the transcript') }}</label>
+        <label class="check" data-subtitle-option hidden><input type="checkbox" name="wrap" {% if conf.file_wrap_srt %}checked{% endif %}> {{ t('Wrap longer subtitles') }}</label>
+      </div>
+      <button class="btn btn-primary" type="submit">{{ t('Transcribe file') }}</button>
+      <p class="stage" id="stage" data-stage role="status"></p>
+    </form>
+  </section>
+  {{ transcript(true, true) }}
+</div>
 {% endblock %}

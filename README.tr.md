@@ -1,376 +1,80 @@
 # Dikte Web
 
-> **[Read in English](README.md)** · [İngilizce okuyun](README.md)
+[English](README.md)
 
-<p align="center">
-  <img src="app/static/logo.png" alt="Dikte Web" width="120">
-</p>
+Dikte Web, mikrofon kayıtlarını ve ses veya video dosyalarını yazıya çevirmek için kendi sunucunuzda çalıştırabileceğiniz tek kullanıcılı bir uygulamadır. [Yusuf İpek’in Dikte projesini](https://github.com/yusufipk/dikte) temel alır ve FastAPI, Jinja ve JavaScript ile tarayıcıda çalışır.
 
-**Dikte Web**, tek kullanıcılı, kendi sunucunda barındırabileceğin (self-hosted)
-bir konuşmadan yazıya web uygulamasıdır. Linux için yazılmış
-[yusufipk/dikte](https://github.com/yusufipk/dikte) sesli dikte uygulamasının
-web yeniden yazımıdır: Qt masaüstü kabuğu çıkarılır, aynı transkripsiyon motoru
-tarayıcıdan kullanılan **FastAPI + HTMX** arayüzüyle sunulur.
+- **Dikte** ekranında mikrofonu kaydedebilir, duraklatıp devam ettirebilir, süreyi ve ses dalgasını görebilirsiniz. Ekran odaktayken Ctrl+Space kaydı başlatır veya bitirir. Sonucu kopyalayabilir, ham metinle karşılaştırabilir veya TXT olarak indirebilirsiniz.
+- **Yazım** için özel adları ve terimleri sözlüğe ekleyin. Ayarlar → Temizleme bölümünde yazım talimatlarını ve isteğe bağlı çeviri dilini seçin.
+- **Dosyalar** ses ve video yükler, TXT ve SRT üretir. Metin düzenleme ve uzun altyazı satırlarını kelime sınırlarından bölme seçenekleri vardır.
+- **Toplantılar** zaman damgalı transkript ve Markdown tutanak üretir. Stereo kayıtta sol kanal mikrofonunuz, sağ kanal karşı taraftır. Mono kayıtta tek konuşmacı etiketi kullanılır. Özet başarısız olursa tekrar deneme saklanan transkripti kullanır.
+- **Asistan** yazılı soruları veya Dikte ekranından gönderilen sesli soruları yanıtlar. Konuşmayı ayarlanan süre boyunca hatırlar. Bir istek için bulut modelini ayrıca seçebilirsiniz.
+- **Geçmiş** tam transkripti, tarihi ve modeli arar. Ses saklama açıksa geçmişten ses kaydı da indirilir. Geçmiş girdisi silindiğinde veya sınır nedeniyle budandığında ilgili ses kaydı kaldırılır.
 
-Bu depo, [yusufipk/dikte](https://github.com/yusufipk/dikte) projesinin bir
-**fork'udur**. Çekirdek transkripsiyon motoru, VAD, temizleme promptları,
-toplantı hattı ve ajan mantığı orijinal projeden türetilmiştir; Qt masaüstü
-arayüzü burada bir web arayüzüyle değiştirilmiştir. Orijinal masaüstü kodu
-`upstream-dikte` dalında korunur.
+**Ayarlar → Temalar** bölümünde Koyu, Açık, Orman Yeşili ve Çelik Mavi seçenekleri var. Seçim anında görünür ve kaydedildiğinde korunur.
 
----
+## Docker ile çalıştırma
 
-## Özellikler
+Yeni kurulum için proje dizinindeki `.env` dosyasına aşağıdaki değerleri yazın. Adlandırılmış Docker birimi, kapsayıcı güncellemelerinde ayarları, geçmişi ve modelleri korur.
 
-- **Dikte** — tarayıcıdan sesini kaydet, transkript al; isteğe bağlı AI
-  temizliği dolgu sözcüklerini ("yani", "hani", "şey"), kekemeleri ve düşünme
-  seslerini siler, noktalama ekler ve yanlış duyulan sözcükleri düzeltir.
-- **Dosya transkripsiyonu** — bir ses veya video dosyası yükle (mp3, m4a, mp4,
-  wav, …), sonucu düz metin veya **SRT altyazı** olarak indir.
-- **Toplantı tutanağı** — mono veya stereo bir kayıt yükle; uygulama kaydı
-  yazıya çevirir, konuşanları ayırır (sen / karşı taraf) ve özetli bir
-  **markdown tutanak** üretir.
-- **Ajan** — yapılandırılmış bir asistana soru sor, konuşma geçmişiyle cevap al.
-- **Geçmiş** — her dikte aranabilir bir listeye kaydedilir ve temizlenebilir.
-- **Ayarlar** — tüm transkripsiyon, temizleme, toplantı ve ajan seçenekleri web
-  arayüzünde. API anahtarları maskelenir, yalnızca değiştirilir, asla
-  gösterilmez.
-
-## Arayüz
-
-- **Modern koyu arayüz** — turkuaz/turuncu vurgu paleti ve Inter tipografisi.
-- **Klavye navigasyonu** — her kontrolün görünür bir odak halkası vardır;
-  arayüz `prefers-reduced-motion` özelliğini de destekler, isteyenler için
-  animasyonları yatıştırır.
-- **Bölümlü Ayarlar** — transkripsiyon, temizleme, yerel modeller, toplantılar
-  ve ajan seçenekleri bölümlere ayrılmıştır; ayrıca whisper.cpp / llama.cpp
-  ikili dosyalarını ve model dosyalarını doğrudan arayüzden kuran bir
-  **Modeller** yöneticisi vardır.
-
-## Dil desteği
-
-Arayüz **İngilizce ve Türkçe** gelir. Ayarlar'dan `ui_language` değerini
-`auto`, `en` veya `tr` yap; `auto` yerel ayarına göre tahmin eder. Temizleme ve
-toplantı promptları da dile özeldir.
-
-## Transkripsiyon sağlayıcıları
-
-Ayarlar'dan şunlardan biri transkripsiyon sağlayıcısı olarak seçilebilir:
-
-| Sağlayıcı | Taban URL | Varsayılan model |
-|-----------|-----------|------------------|
-| OpenAI | `https://api.openai.com/v1` | `gpt-4o-transcribe` |
-| Groq | `https://api.groq.com/openai/v1` | `whisper-large-v3-turbo` |
-| OpenRouter | `https://openrouter.ai/api/v1` | `openai/gpt-4o-transcribe` |
-| Local (whisper.cpp) | none (bu makinede çalışır) | whisper `.bin` modeli (Ayarlar → Modeller'den kurulur) |
-
-Ajan **OpenRouter** (bulut) ve **OmniRoute**'u (yerel, OpenAI-uyumlu bir uç)
-destekler; ikincisi kendi ağındaki makineler, örn. yerel bir LLM sunucusu için
-tasarlanmıştır.
-
----
-
-## Hızlı başlangıç (Docker)
-
-1. Proje dizininde bir `.env` dosyası oluştur:
-
-   ```dotenv
-   DIKTE_WEB_PASSWORD=şifreniz
-   ```
-
-   Sağlayıcı API anahtarları buraya **yazılmaz** — bunları web **Ayarlar**
-   sayfasında (Transkripsiyon / Ajan bölümleri) yapılandır. Değerler isteğe
-   bağlıdır; `DIKTE_WEB_PASSWORD` boş bırakılırsa uygulama kendisi bir şifre
-   üretir ve veri volume'una kaydeder.
-
-2. Uygulamayı başlat:
-
-   ```bash
-   docker compose up -d
-   ```
-
-3. http://localhost:8000 adresini aç ve şifreyle giriş yap.
-
-İmaj **ffmpeg** kurar, yani her türlü ses/video dönüşümü kutudan çıktığı gibi
-çalışır. Yüklemeler 1 GB ile sınırlıdır (`DIKTE_MAX_UPLOAD`).
-
-> **Erişim:** `docker-compose.yml` servisi yalnızca **loopback**'e bağlar
-> (`127.0.0.1:8000`). Önüne bir şey koymadıkça ana makinenin dışından
-> erişilemez. İki seçenek aşağıda.
-
-> **İmaj otomatik derlenir:** `master`'a her push, Docker imajını derleyip
-> `ghcr.io/eco-null/dikte-web`'e `latest` (ve bir SHA etiketiyle) yayınlayan bir
-> GitHub Actions işi başlatır. Compose'un yeni imajı alması için bir sonraki
-> `docker compose up` öncesi `docker compose pull` çalıştırman yeterli.
-
-### Cloudflare Tunnel ile yayınla (ters proxy gerekmez)
-
-Cloudflare'da bir alan adın varsa `cloudflared` TLS'i Cloudflare kenarında
-sonlandırır ve loopback portuna tünel açar — çalıştırman gereken bir ters
-proxy yok:
-
-1. Ana makineye `cloudflared` kur (bkz.
-   [developers.cloudflare.com](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)).
-2. Giriş yap ve tünel oluştur (bir kez):
-   ```bash
-   cloudflared tunnel login
-   cloudflared tunnel create dikte-web
-   ```
-3. `~/.cloudflared/config.yml` dosyasını yapılandır:
-   ```yaml
-   tunnel: dikte-web
-   credentials-file: /home/KULLANICI/.cloudflared/KULLANICIID.json
-
-   ingress:
-     - hostname: dikte.ornek.com
-       service: http://localhost:8000
-     - service: http_status:404
-   ```
-4. DNS adını tünele bağla, sonra çalıştır (kalıcılık için systemd servisi
-   olarak):
-   ```bash
-   cloudflared tunnel route dns dikte-web dikte.ornek.com
-   cloudflared tunnel run dikte-web
-   ```
-5. `https://dikte.ornek.com` adresini aç ve şifreyle giriş yap.
-
-Uygulama, login sınırlaması için Cloudflare'ın `CF-Connecting-IP` başlığını
-zaten kullanır; böylece her gerçek ziyaretçi kendi deneme bütçesini alır.
-`DIKTE_COOKIE_SECURE=1`'i açık bırak (varsayılan) — Cloudflare HTTPS sunar,
-`Secure` çerez çalışır. Ek olarak 8000 portunu internete **açma**; tünel tek
-giriş noktasıdır.
-
-### OmniRoute varsayılanı
-
-`host.docker.internal`, Docker ana makinesine çözümlenir (compose bunu
-`host-gateway` ile eşler). Ana makinede 20128 portunda yerel bir LLM sunucusu
-çalıştırırsan ajan anında çalışır.
-
-**Ayarlar** (sayfa → *Assistant* bölümü), üç alan:
-
-| Alan | Amaç |
-|------|------|
-| `assistant_provider` | **OmniRoute**'u seç |
-| `assistant_omniroute_base_url` | uç adresi, ör. `http://host.docker.internal:20128/v1` |
-| `assistant_omniroute_model` | model kimliği (ör. `gemma-3-4b-it`) |
-| `assistant_omniroute_api_key` | **opsiyonel** — doluysa `Bearer` token olarak gönderilir; anahtarsız yerel uçlar için boş bırak |
-
-Ayrıca uç adresini **Ayarlar**'da — yukarıdaki `assistant_omniroute_base_url`
-alanı — belirleyebilirsin; artık `OMNIROUTE_BASE_URL` ortam değişkeni yok.
-Özel veya yerel bir adrese çözümlenen her taban URL, `host.docker.internal`,
-`localhost` ve `127.0.0.1` dışındaysa reddedilir (SSRF koruması).
-
-### Docker'sız çalıştırma
-
-```bash
-pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+```dotenv
+DIKTE_WEB_PASSWORD=kendi-parolanizi-yazin
+DIKTE_COOKIE_SECURE=0
+DIKTE_DATA_DIR=dikte_data
 ```
 
-Ana makinedeki gereksinimler:
-
-- **Python 3.10+** (geliştirme ve test 3.14'te yapıldı).
-- `PATH`'te **ffmpeg** (yüklemeleri WAV/MP3'e çevirmek için).
-- `DIKTE_WEB_PASSWORD` değerini ayarla veya ilk başlangıçta üretilip
-  `web_password` dosyasına kaydedilen şifreyi oku (aşağıdaki *Kimlik
-  doğrulama* bölümüne bak).
-
----
-
-## Yapılandırma
-
-### Ortam değişkenleri
-
-| Değişken | Varsayılan | Açıklama |
-|----------|-----------|----------|
-| `DIKTE_WEB_PASSWORD` | üretilir | Tek giriş şifresi. Boşsa rastgele üretilir, `web_password` dosyasına yazılır (0600 izni, günlüğe yazılmaz). |
-| `XDG_CONFIG_HOME` | `~/.config` | `dikte/config.json` için taban. |
-| `XDG_DATA_HOME` | `~/.local/share` | `dikte/` verisi için taban: geçmiş, toplantılar, kayıtlar, `web_password`, `assistant.json`. |
-| `DIKTE_MAX_UPLOAD` | `1073741824` (1 GB) | Maks. yükleme boyutu (üstüne 413). |
-
-Sağlayıcı API anahtarları (OpenAI, Groq, OpenRouter, OmniRoute) ortamdan
-**okunmaz** — Ayarlar'da (`config.json` içinde) saklanır ve web arayüzünden
-yönetilir.
-
-### Veri düzeni
-
-Kalıcı her şey veri dizini altında durur (`$XDG_DATA_HOME/dikte`, Docker'da
-`/data` olarak bağlanır):
-
-```
-dikte/
-├── config.json          # ayarlar (web Ayarlar'ı bunu düzenler)
-├── history.jsonl        # dikte geçmişi, her satır bir JSON kaydı
-├── web_password         # üretilen şifre (yalnızca DIKTE_WEB_PASSWORD boşsa)
-├── assistant.json       # ajan konuşma oturumu
-├── recordings/          # yalnızca kayıt-tutma açıksa tutulur
-└── meetings/
-    ├── meetings.jsonl   # toplantı dizini
-    ├── <base>.md        # üretilen tutanak
-    └── <base>.wav       # toplantı sesi
+```sh
+docker compose up -d
 ```
 
-### Web arayüzünde açık olan ayarlar
+<http://localhost:8245> adresini açın. HTTPS kullanırken `DIKTE_COOKIE_SECURE=1` bırakın. Uygulamayı HTTPS üzerinden sunmak için ters proxy veya Cloudflare Tunnel kullanabilirsiniz. Tarayıcıda mikrofon erişimi HTTPS veya localhost gerektirir.
 
-- **Genel** — `ui_language`
-- **Transkripsiyon** — sağlayıcı, sağlayıcıya özel model ve API anahtarı,
-  konuşma dili (`auto`/`tr`/`en`), prompt ipucu, **temizleme** anahtarı + model
-  + akıl yürütme seviyesi, VAD seçenekleri (`skip_silent`, `silence_db`,
-  `speech_margin_db`, `min_voiced_seconds`), halüsinasyon filtresi, geçmiş
-  sınırı.
-- **Toplantılar** — temizleme anahtarı, model, akıl yürütme, sen/karşı taraf
-  adları, katılımcı listesi.
-- **Ajan** — sağlayıcı (OpenRouter/OmniRoute), sağlayıcıya özel model, taban
-  URL, oturum süresi (dakika), zaman aşımı.
+Compose `ghcr.io/eco-null/dictation-web:latest` imajını çeker. Belirli bir sürümü sabitlemek için `DIKTE_IMAGE` değerini ayarlayın. Yerel kaynak değişikliklerini Docker’da denemek için yerel imajı bir Compose override ile seçin veya aşağıdaki gibi kaynaktan çalıştırın.
 
-### Yerel modeller
+Mevcut kurulumu güncellerken veri bağını ve Compose proje adını koruyun. `DIKTE_DATA_DIR` boşsa eski kurulum yolu `/DATA/AppData/dikte-web` kullanılır. Farklı bir ana makine dizini seçerseniz önce kapsayıcıdaki `dikte` kullanıcısına yazma izni verin. Varsayılan 8245 portu loopback adresine bağlıdır. Adresi veya portu `DIKTE_BIND_ADDRESS` ve `DIKTE_PORT` ile değiştirebilirsiniz. Kendi parolanızı girin veya kapsayıcıdaki `/data/share/dikte/web_password` dosyasından üretilen parolayı okuyun.
 
-- **Ayarlar → Modeller** — `whisper.cpp` / `llama.cpp` ikili dosyalarını ve
-  model dosyalarını (whisper `.bin` modelleri, GGUF quant dosyaları) doğrudan
-  web arayüzünden kur.
-- **Transkripsiyon** — bu makinede whisper.cpp ile yazıya çevirmek için
-  `transcribe_provider` değerini `local` yap (API anahtarı gerekmez).
-- **Temizleme** — transkriptleri llama.cpp ile yerel olarak temizlemek için
-  `cleanup_provider` değerini `local-llm` yap.
-- **Veri yolları** — ikili dosyalar `/data/share/dikte/bin`, modeller
-  `/data/share/dikte/models` (Docker'da `dikte_data` biriminde).
+## Kaynaktan çalıştırma
 
----
+Python 3.11+ ve PATH üzerinde FFmpeg gerekir.
 
-## Kimlik doğrulama
-
-- Tek ortak şifre; kullanıcı hesabı yok.
-- Giriş, imzalı, **httponly**, `SameSite=Lax` oturum çerezi verir; **7 gün**
-  sonra dolar.
-- Çerez, işlem başına rastgele bir pepper ile HMAC imzalıdır; yeniden
-  başlatmalar arasında taklit edilemez.
-- `DIKTE_WEB_PASSWORD` ayarlanmamışsa rastgele bir şifre üretilir ve
-  `web_password` dosyasına kaydedilir (0600 izni); asla günlüğe yazılmaz.
-
-> **Güvenlik notu:** bu, tek şifreyle korunan tek kullanıcılı bir uygulamadır.
-> İnternete açmayın. Kendi ağında veya TLS'li bir ters proxy arkasında
-> çalıştırın.
-
----
-
-## HTTP API
-
-Uygulama, HTMX'in sürdüğü ince bir JSON API'sidir. Aşağıdaki uçların tümü giriş
-kapısının arkasındadır (oturum yoksa `/api/*` → `401`).
-
-| Metot | Yol | Amaç |
-|-------|-----|------|
-| `POST` | `/login` | Giriş (form alanı `password`). |
-| `GET` | `/logout` | Çıkış. |
-| `POST` | `/api/dictate` | Dikte işi başlat (multipart `audio`). |
-| `POST` | `/api/files/transcribe` | Dosya transkripsiyon işi başlat (`file`, `timestamps`, `cleanup`). |
-| `POST` | `/api/meetings` | Toplantı işi başlat (`file`, `participants`). |
-| `GET` | `/api/meetings` | Toplantıları listele (yeniden eskiye). |
-| `GET` | `/api/meetings/{base}` | Toplantı detayı + üretilen belge. |
-| `POST` | `/api/meetings/{base}/retry` | Toplantı hattını yeniden çalıştır. |
-| `DELETE` | `/api/meetings/{base}` | Toplantıyı sil. |
-| `POST` | `/api/agent` | Ajana sor (`{"question": "…"}`). |
-| `GET` | `/api/jobs/{id}` | İşin durumunu/sonucunu yokla. |
-| `GET` | `/api/jobs/{id}/download?format=txt\|srt` | Transkripti indir. |
-| `GET` | `/api/history` | Geçmişi listele. |
-| `POST` | `/api/history/clear` | Geçmişi temizle. |
-| `DELETE` | `/api/history` | Seçili satırları sil (`{"rows": […]}`). |
-| `GET` | `/api/settings` | Ayarları oku (anahtarlar maskeli). |
-| `POST` | `/api/settings` | Ayarları kaydet. |
-| `GET` | `/healthz` | Canlılık yoklaması (public; config dosyasının okunabildiğini denetler). |
-
-### İşler
-
-Transkripsiyon ve toplantı işleri arka plan thread'lerinde çalışır. `POST`
-uçları anında `{"job_id": …}` döndürür; istemci `status` `done` veya `failed`
-olana dek `GET /api/jobs/{id}` yoklar. Aynı anda yalnızca bir ağır iş çalışır —
-ikinci bir iş göndermek **`409 Conflict`** döndürür. Tamamlanan işler otomatik
-budanır (son 100 tanesi tutulur).
-
----
-
-## Geliştirme
-
-```bash
-pip install -r requirements-dev.txt
-pytest
-uvicorn app.main:app --reload
+```sh
+python -m pip install -r requirements.txt
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-- Test takımı **412 test / 895 alt test**, hepsi yeşil (bazı POSIX'e özel chmod
-  testleri Windows'ta atlanır).
-- Testler ağı (sağlayıcıları) ve ffmpeg dönüşümlerini mock'lar; çekirdek
-  fonksiyonlar gerçek WAV üretir, böylece hatlar uçtan uca çalışır.
+Yerel HTTP geliştirmesinde kabukta `DIKTE_COOKIE_SECURE=0` ayarlayın. `DIKTE_WEB_PASSWORD` boşsa uygulama ürettiği parolayı veri dizininde `web_password` dosyasına kaydeder. Arka plan işleri ve oturum imzalama tek sunucu sürecinde çalışır.
 
-```
-pytest                            # hepsini çalıştır
-pytest tests/test_routes.py -v    # web E2E takımı
-```
+## Sağlayıcılar ve modeller
 
-## Proje düzeni
+Transkripsiyon, düzenleme, asistan ve toplantı transkripsiyonu için ayrı sağlayıcı ve model seçebilirsiniz. OpenAI, Groq, OpenRouter, OmniRoute ve özel OpenAI uyumlu sunucu seçenekleri bulunur. Özel sunucu anahtarsız çalışabilir. Sunucunun transkripsiyon için `/audio/transcriptions`, metin işlemleri için `/chat/completions` uçlarını desteklemesi gerekir. SRT ve toplantı zaman çizelgesi, transkripsiyon sağlayıcısının zaman damgası üretmesine bağlıdır. Toplantı özeti düzenleme sağlayıcısını kullanır. OpenRouter için ayrı bir özet modeli seçebilirsiniz.
 
-```
-app/
-├── main.py                # FastAPI uygulaması, giriş kapısı, /healthz
-├── auth.py                # tek şifreli giriş + imzalı çerez
-├── jobs.py                # arka plan iş çalıştırıcı (aynı anda 1, budama)
-├── settings.py            # web'e açık ayar dilimi + maskeleme
-├── rms.py                 # ses seviyesi serisi (dalga formu için)
-├── routes/
-│   ├── pages.py           # HTML sayfaları (Jinja2)
-│   └── api.py             # JSON uçları
-├── static/                # CSS, app.js, recorder.js, htmx
-├── templates/             # dikte, dosya, toplantı, ajan, geçmiş, ayarlar
-└── vendor/dikte/          # (Qt'siz) orijinal motor:
-    ├── api.py             # OpenAI/Groq/OpenRouter/yerel HTTP çağrıları
-    ├── worker.py          # dikte hattı
-    ├── filetranscribe.py  # dosya → txt/srt hattı
-    ├── meeting.py         # toplantı → tutanak hattı
-    ├── assistant.py       # ajan (OpenRouter / OmniRoute)
-    ├── cleanup.py         # temizleme modeli çağrıları
-    ├── config.py          # ayar saklama + varsayılanlar + promptlar
-    ├── vad.py             # ses etkinliği tespiti
-    ├── ggml.py            # yerel whisper.cpp / llama.cpp desteği
-    ├── signals.py         # ilerleme yayını
-    └── i18n.py            # en/tr string tablosu
-tests/                     # tam takım (birim + web E2E)
+Ses için whisper.cpp, metin için llama.cpp kullanmak üzere **Yerel** seçeneğini seçin. Ayarlar → Yerel modeller uyumlu model ve programları sağlama toplamını denetleyerek indirir. Uyumlu paket bulunmayan makinelerde `whisper-server` veya `llama-server` kurup PATH’e ekleyin. Anahtarları Ayarlar’da kaydedin. Model önerileri kayıtlı adres ve anahtarla alınır. Model kimliğini elle de girebilirsiniz.
+
+## Veri ve API
+
+| Ayar | İşlevi |
+| --- | --- |
+| `DIKTE_WEB_PASSWORD` | Tek giriş parolası |
+| `DIKTE_COOKIE_SECURE` | Yalnız HTTPS oturum çerezi, varsayılan `1` |
+| `DIKTE_MAX_UPLOAD` | Bayt olarak dosya boyutu sınırı, varsayılan 1 GiB |
+| `XDG_CONFIG_HOME` | `dikte/config.json` dosyasının kök dizini |
+| `XDG_DATA_HOME` | Geçmiş, toplantılar, modeller ve üretilen parola için kök dizin |
+
+Docker’da ayarlar `/data/config`, diğer veriler `/data/share` altında tutulur. İkisini de korumak için bağlı dizini yedekleyin. Bu dizin API anahtarlarını, transkriptleri ve ses kayıtlarını içerebilir.
+
+- `POST /api/dictate`, `POST /api/files/transcribe` ve `POST /api/meetings`, multipart dosya yüklemesi alıp iş kimliği döndürür.
+- `GET /api/jobs/{id}` durumu ve sonucu gösterir. `GET /api/jobs/{id}/download?fmt=txt|srt` ilgili çıktıyı indirir. Aynı anda bir ağır iş çalışabilir. Dolu kuyruk HTTP 409 döndürür.
+- `GET /api/meetings/{base}/download` tutanağı indirir. `POST /api/meetings/{base}/retry` tekrar dener.
+- `POST /api/agent`, `question` ve isteğe bağlı `provider` ile `model` alanlarını alır. `GET /api/history` dikteleri listeler. `GET /api/settings` anahtarları maskeler ve `POST /api/settings` değişen alanları kabul eder.
+- `GET /healthz` herkese açıktır. Diğer API uçları imzalı oturum çerezi gerektirir.
+
+## Geliştirme ve orijinal proje
+
+```sh
+python -m pip install -r requirements-dev.txt
+python -m pytest
 ```
 
-## Teşekkür
+Bu güncelleme altyazı satır bölme, kelime zamanlamalı altyazı ve kısa kayıtlardaki halüsinasyon filtresi için orijinal deponun [`ab35e01`](https://github.com/yusufipk/dikte/commit/ab35e01a6eaaa4933b2478f7a3c5760d7eb7c90c) revizyonunu temel alır. Sözlük, yazım talimatları, çeviri, kayıt kontrolleri ve sesli sorular tarayıcıya uyarlanmıştır. Sistem genelinde kısayol, diğer uygulamalara otomatik yapıştırma, sistem sesi kaydı ve masaüstü CLI entegrasyonları yerel uygulama gerektirir.
 
-- Orijinal proje: **[yusufipk/dikte](https://github.com/yusufipk/dikte)** —
-  Linux için sesli dikte uygulaması. Tüm çekirdek motor kodu ondan türetilmiştir.
-- Bu fork, Qt masaüstü arayüzünü çıkarır ve FastAPI + HTMX web arayüzü, tek
-  şifreli kimlik doğrulama, arka plan işleri, yerel whisper.cpp/llama.cpp
-  desteği ve Docker paketlemesi ekler.
-
-## Güvenlik
-
-- **Tek şifre + hız sınırlama.** Uygulama tek bir ortak şifreyle korunur
-  (`DIKTE_WEB_PASSWORD`). Giriş, istemci IP'si başına hız sınırlıdır
-  (15 dakikada 5 başarısız deneme → `429`) ve şifre sabit zamanlı
-  karşılaştırmayla denetlenir.
-- **Oturum çerezi.** `dikte_session` çerezi `HttpOnly`, `SameSite=Lax` ve
-  varsayılan olarak `Secure`'dur (`DIKTE_COOKIE_SECURE=1`). `Secure` bayrağını
-  yalnızca güvenilir bir ağda düz HTTP üzerinden çalışıyorsan kapat
-  (`DIKTE_COOKIE_SECURE=0`).
-- **TLS gerekli — ama ters proxy şart değil.** Servis yalnızca loopback'e
-  bağlanır (`127.0.0.1:8000`). Önüne TLS'li bir Caddy/nginx/Traefik proxy koy
-  ya da — en basiti — yukarıda anlatıldığı gibi bir [Cloudflare Tunnel
-  (`cloudflared`)](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
-  ile yayınla; TLS'i Cloudflare kenarında sonlandırır ve loopback portuna
-  tünel açar. 8000 portunu doğrudan internete açma.
-- **CSRF koruması.** Değiştirici istekler aynı kökenden gelen
-  `Origin`/`Referer` başlığına göre denetlenir; siteler arası istekler `403` ile
-  reddedilir.
-- **Markdown temizlenir.** Toplantı tutanakları HTML olarak gösterilirken nh3
-  HTML temizleyicisinden geçirilir; böylece transkript içeriğinden gelen
-  depolanmış XSS engellenir.
-- **Birimi gizli tut.** `dikte_data` biriminde API anahtarları (`config.json`
-  içinde) ve toplantı kayıtları düz metin olarak durur. Düzenli yedek al ve
-  yalnızca senin okuyabildiğin dosya sistemlerinde sakla.
-
-## Lisans
-
-Orijinal lisans koşulları için yukarıdaki projeye bakın. Bu fork,
-[yusufipk/dikte](https://github.com/yusufipk/dikte) ile aynı lisansı taşır.
+Lisans [GPL-3.0](LICENSE).

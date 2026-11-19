@@ -1,7 +1,23 @@
+import math
+import threading
+
 import config as cfg
 
-_SERVICES = ("transcribe", "cleanup", "assistant", "meeting")
-_PROVIDERS = ("openai", "groq", "openrouter", "omniroute")
+_lock = threading.RLock()
+_PROVIDERS = ("openai", "groq", "openrouter", "omniroute", "custom")
+
+THEMES = {
+    "postready-dark": "Dark",
+    "postready-light": "Light",
+    "forest": "Forest Green",
+    "steel": "Steel Blue",
+}
+DEFAULT_THEME = cfg.DEFAULTS["ui_theme"]
+
+
+def theme(conf):
+    value = conf["ui_theme"]
+    return value if isinstance(value, str) and value in THEMES else DEFAULT_THEME
 
 
 def _provider_fields(service, providers, local_extra):
@@ -16,11 +32,12 @@ def _provider_fields(service, providers, local_extra):
     fields[f"{service}_local_gpu"] = ("bool", [])
     fields[f"{service}_local_preload"] = ("bool", [])
     for k in local_extra:
-        fields[f"{service}_local_{k}"] = ("str", [])
+        fields[f"{service}_local_{k}"] = ("int" if k == "context" else "str", [])
     return fields
 
 
 WEB_FIELDS = {
+    "ui_theme": ("select", THEMES),
     "ui_language": ("select", ["auto", "tr", "en"]),
     "language": ("select", ["auto", "tr", "en"]),
     "transcribe_prompt": ("str", []),
@@ -34,13 +51,18 @@ WEB_FIELDS = {
     "keep_audio": ("bool", []),
     "max_seconds": ("int", []),
     "file_timestamps": ("bool", []),
+    "file_wrap_srt": ("bool", []),
+    "dictionary": ("str", []),
+    "writing_style": ("str", []),
+    "translate_to": ("select", ["", "Turkish", "English", "German", "French", "Spanish", "Italian", "Arabic"]),
     "file_cleanup": ("bool", []),
     "file_cleanup_prompt": ("str", []),
     "cleanup_enabled": ("bool", []),
     "cleanup_reasoning": ("str", []),
     "cleanup_prompt": ("str", []),
     "meeting_cleanup": ("bool", []),
-    "meeting_model": ("str", []),
+    "meeting_language": ("select", ["", "auto", "tr", "en"]),
+    "meeting_summary_model": ("str", []),
     "meeting_reasoning": ("str", []),
     "meeting_prompt": ("str", []),
     "meeting_max_seconds": ("int", []),
@@ -78,10 +100,14 @@ def _coerce(key, raw):
         if not text:
             return None
         try:
-            return float(text)
+            value = float(text)
+            return value if math.isfinite(value) else None
         except ValueError:
             return None
-    return str(raw).strip()
+    value = str(raw).strip()
+    if kind == "select" and value not in WEB_FIELDS[key][1]:
+        raise ValueError(f"Invalid value for {key}.")
+    return value
 
 
 def redact(key, value):
@@ -91,19 +117,30 @@ def redact(key, value):
 
 
 def present(conf):
-    return {key: redact(key, conf[key]) for key in WEB_FIELDS}
+    with _lock:
+        return {key: theme(conf) if key == "ui_theme" else redact(key, conf[key])
+                for key in WEB_FIELDS}
+
+
+def snapshot(conf):
+    with _lock:
+        return conf.snapshot()
 
 
 def apply(conf, updates):
-    for key, raw in (updates or {}).items():
-        if key not in WEB_FIELDS:
-            continue
-        if key in MASKED and str(raw).strip() == redact(key, conf[key]):
-            continue
-        if key in MASKED and not str(raw).strip():
-            continue
-        value = _coerce(key, raw)
-        if value is None:
-            continue
-        conf[key] = value
-    conf.save()
+    with _lock:
+        pending = conf.snapshot()
+        for key, raw in updates.items():
+            if key not in WEB_FIELDS:
+                continue
+            if key in MASKED and (str(raw).strip() == redact(key, conf[key]) or raw == ""):
+                continue
+            value = "" if key in MASKED and raw is None else _coerce(key, raw)
+            if value is None:
+                continue
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                if key != "silence_db" and value < 0:
+                    raise ValueError(f"Invalid value for {key}.")
+            pending[key] = value
+        pending.save()
+        conf.data = pending.data

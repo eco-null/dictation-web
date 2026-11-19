@@ -1,0 +1,16 @@
+{% macro transcript(result_visible=false, subtitles=false) %}
+<section class="result transcript" id="result" {% if not result_visible %}hidden{% endif %}>
+  <header class="panel-head">
+    <h2><label id="result-label" for="text">{{ t('Transcript') }}</label></h2>
+    <button class="btn btn-sm" data-copy data-target="#text" disabled>{{ t('Copy') }}</button>
+  </header>
+  <p id="result-warning" class="warn" role="status" hidden></p>
+  <textarea id="text" rows="11" placeholder="{{ t('Your transcript will appear here.') }}" readonly></textarea>
+  <footer class="transcript-footer">
+    <button class="btn btn-sm btn-ghost" data-raw hidden>{{ t('Original text') }}</button>
+    <span class="spacer"></span>
+    <button class="btn btn-sm btn-ghost" id="download" data-download data-fmt="txt" disabled>{{ t('Download TXT') }}</button>
+    {% if subtitles %}<button class="btn btn-sm btn-ghost" data-download data-fmt="srt" hidden>{{ t('Download SRT') }}</button>{% endif %}
+  </footer>
+</section>
+{% endmacro %}

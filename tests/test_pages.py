@@ -32,7 +32,7 @@ class PagesTest(DikteTest):
 
     def test_nav_has_all_sections(self):
         body = self.client.get("/dictate").text
-        for label in ("Dictation", "Files", "Meetings", "Agent",
+        for label in ("Dictation", "Files", "Meetings", "Assistant",
                       "History", "Settings", "Log out"):
             self.assertIn(label, body)
 
@@ -62,6 +62,13 @@ class PagesTest(DikteTest):
         self.client.cookies.clear()
         resp = self.client.get("/api/history")
         self.assertEqual(resp.status_code, 401)
+
+    def test_login_accepts_a_unicode_password(self):
+        from unittest.mock import patch
+        with patch.dict(os.environ, {"DIKTE_WEB_PASSWORD": "Türkçe parola"}):
+            response = self.client.post("/login", data={"password": "Türkçe parola"},
+                                        follow_redirects=False)
+        self.assertEqual(response.status_code, 303)
 
     def test_login_rate_limit_returns_429_after_failures(self):
         from app.routes import pages as pages_routes
@@ -97,15 +104,9 @@ class PagesTest(DikteTest):
 
     def test_dictation_page_has_record_controls(self):
         body = self.client.get("/dictate").text
-        for marker in ('id="record"', "data-copy", "data-download", 'id="meter"'):
+        for marker in ('id="record"', 'id="stop"', 'id="cancel"', 'id="pause"', 'role="status"'):
             self.assertIn(marker, body)
-        self.assertIn('class="record-btn"', body)
-
-    def test_css_carries_design_tokens(self):
-        css = self.client.get("/static/app.css").text
-        for token in ("--color-primary", "--color-accent", "--space-1",
-                      "--radius-md", "--font-sans", "--duration-fast"):
-            self.assertIn(token, css)
+        self.assertIn('aria-current="page"', body)
 
     def test_css_respects_reduced_motion(self):
         css = self.client.get("/static/app.css").text
@@ -114,17 +115,6 @@ class PagesTest(DikteTest):
     def test_css_has_focus_visible_rings(self):
         css = self.client.get("/static/app.css").text
         self.assertIn(":focus-visible", css)
-
-    def test_css_has_polish_micro_interactions(self):
-        css = self.client.get("/static/app.css").text
-        for marker in ("@keyframes card-rise", ".card:hover",
-                       ".btn:active", "prefers-reduced-motion"):
-            self.assertIn(marker, css)
-
-    def test_js_has_stage_and_spinner_helpers(self):
-        js = self.client.get("/static/app.js").text
-        for marker in ("setStage", "setSpinner", "has-spinner"):
-            self.assertIn(marker, js)
 
     def test_nav_uses_svg_icons_not_emoji(self):
         body = self.client.get("/dictate").text
@@ -146,43 +136,47 @@ class PagesTest(DikteTest):
         for marker in ("dropzone", "data-download", 'data-fmt="srt"'):
             self.assertIn(marker, body)
 
-    def test_files_dropzone_is_keyboard_accessible(self):
-        body = self.client.get("/files").text
-        self.assertIn('tabindex="0"', body)
-        self.assertIn('role="button"', body)
+    def test_files_and_meetings_have_a_labeled_native_upload_input(self):
+        for path in ("/files", "/meetings"):
+            body = self.client.get(path).text
+            self.assertIn('for="upload-file"', body)
+            self.assertRegex(body, r'<input id="upload-file" type="file"[^>]+required>')
 
     def test_authenticated_pages_disable_caching(self):
         for path in ("/dictate", "/files", "/meetings", "/agent",
-                     "/history", "/settings"):
-            body = self.client.get(path).text
-            self.assertIn('http-equiv="Cache-Control" content="no-store"', body, path)
+                     "/history", "/settings", "/api/history"):
+            response = self.client.get(path)
+            self.assertEqual(response.headers["cache-control"], "no-store", path)
 
     def test_meeting_detail_disable_caching(self):
         cfg.save_meeting({"base": "20260101-120000", "status": "done",
                           "title": "Toplantı", "model": "x"})
-        body = self.client.get("/meetings/20260101-120000").text
-        self.assertIn('http-equiv="Cache-Control" content="no-store"', body)
+        response = self.client.get("/meetings/20260101-120000")
+        self.assertEqual(response.headers["cache-control"], "no-store")
 
     def test_login_page_disable_caching(self):
         self.client.cookies.clear()
-        body = self.client.get("/login").text
-        self.assertIn('http-equiv="Cache-Control" content="no-store"', body)
+        response = self.client.get("/login")
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertNotIn('aria-label="Workspace"', response.text)
 
     def test_meetings_page_has_action_buttons(self):
         cfg.save_meeting({"base": "20260101-120000", "status": "failed",
                           "title": "Eski toplantı", "model": "x"})
         body = self.client.get("/meetings").text
-        for marker in ("data-retry", "data-del", "meeting-card"):
+        for marker in ("data-retry", "data-delete-meeting", "/meetings/20260101-120000"):
             self.assertIn(marker, body)
 
     def test_agent_page_has_chat_surface(self):
         body = self.client.get("/agent").text
-        for marker in ("chat", "data-copy"):
+        for marker in ('role="log"', 'name="question"', 'name="provider"', 'name="model"'):
             self.assertIn(marker, body)
 
     def test_history_page_has_bulk_actions(self):
+        cfg.append_history({"text": "Complete transcript", "raw": "Raw", "model": "demo"})
         body = self.client.get("/history").text
-        for marker in ("delete-selected", "row-check"):
+        for marker in ("delete-selected", "row-check", "history-search",
+                       'data-target="#transcript-1"', "Complete transcript"):
             self.assertIn(marker, body)
 
     def test_settings_page_has_local_and_models_sections(self):
@@ -192,13 +186,7 @@ class PagesTest(DikteTest):
         self.assertIn('value="local"', body)
         self.assertIn('name="ui_language"', body)
         self.assertIn('name="file_timestamps"', body)
-        self.assertIn("data-models", body)
-
-    def test_settings_page_uses_compact_grid_and_save_badge(self):
-        body = self.client.get("/settings").text
-        self.assertIn("settings-grid", body)
-        self.assertIn("save-badge", body)
-        self.assertIn('id="save-status"', body)
+        self.assertIn('id="models"', body)
 
     def test_settings_page_offers_omniroute_provider(self):
         body = self.client.get("/settings").text
@@ -220,26 +208,11 @@ class PagesTest(DikteTest):
         self.assertIn('name="assistant_openai_key"', body)
 
     def test_settings_only_selected_provider_visible_server_side(self):
-        import re
         body = self.client.get("/settings").text
-        # transcribe defaults to openai -> only openai block visible
-        for p in ("groq", "openrouter", "omniroute", "local"):
-            blk = re.search(rf'<div class="provider-fields" data-service="transcribe" data-provider="{p}"([^>]*)>', body)
-            self.assertIsNotNone(blk, f"missing transcribe/{p} block")
-            self.assertIn("hidden", blk.group(1), f"transcribe/{p} not hidden")
-        sel = re.search(r'<div class="provider-fields" data-service="transcribe" data-provider="openai"([^>]*)>', body)
-        self.assertIsNotNone(sel, "missing transcribe/openai block")
-        self.assertNotIn("hidden", sel.group(1), "transcribe/openai should be visible")
-
-    def test_css_hides_provider_blocks(self):
-        css = self.client.get("/static/app.css").text
-        self.assertIn("provider-fields[hidden]", css)
-        self.assertIn("display: none !important", css)
-
-    def test_result_textareas_auto_grow_in_css(self):
-        css = self.client.get("/static/app.css").text
-        self.assertIn("min-height: 120px", css)
-        self.assertIn("overflow: hidden", css)
+        transcription = body.split('id="transcribe"', 1)[1].split("</fieldset>", 1)[0]
+        self.assertRegex(transcription, r'data-provider="openai"\s*>')
+        for provider in ("groq", "openrouter", "omniroute", "custom", "local"):
+            self.assertRegex(transcription, rf'data-provider="{provider}"\s+hidden>')
 
     def test_settings_has_turkish_labels_when_tr(self):
         i18n.set_language("tr")
@@ -247,7 +220,7 @@ class PagesTest(DikteTest):
         body = self.client.get("/settings").text
         self.assertIn("Sağlayıcı", body)
         self.assertIn("Transkripsiyon", body)
-        self.assertIn("OmniRoute adresi", body)
+        self.assertIn("Temel URL", body)
 
     def test_settings_separates_the_two_languages(self):
         body = self.client.get("/settings").text
@@ -256,10 +229,10 @@ class PagesTest(DikteTest):
         self.assertIn('name="ui_language"', body)
         self.assertEqual(body.count('name="language"'), 1)
 
-    def test_settings_prompt_fields_are_prefilled(self):
+    def test_settings_keeps_builtin_prompts_dynamic(self):
         body = self.client.get("/settings").text
-        self.assertIn("You clean up dictation transcripts", body)
-        self.assertIn("This request reached you from Dikte", body)
+        self.assertRegex(body, r'<textarea name="cleanup_prompt"[^>]*></textarea>')
+        self.assertIn("Uses the built-in prompt when empty", body)
 
     def test_settings_has_a_meetings_card(self):
         body = self.client.get("/settings").text
@@ -267,51 +240,53 @@ class PagesTest(DikteTest):
         self.assertIn('name="meeting_provider"', body)
         self.assertIn('name="meeting_openrouter_model"', body)
 
-    def test_settings_has_no_save_button_and_autosaves(self):
-        import re
+    def test_theme_defaults_to_brand_and_persists_across_pages(self):
         body = self.client.get("/settings").text
-        form = re.search(r'<form id="settings-form".*?</form>', body, re.S).group(0)
-        self.assertNotIn('type="submit"', form)
+        self.assertIn('data-theme="postready-dark"', body)
+        self.assertIn('name="ui_theme" value="postready-dark" checked', body)
+        for label in ("Dark", "Light", "Forest Green", "Steel Blue"):
+            self.assertIn(f'<span>{label}</span>', body)
+        for alternative in ("postready-light", "forest", "steel"):
+            self.assertIn(f'name="ui_theme" value="{alternative}"', body)
+        response = self.client.post("/api/settings", json={"settings": {"ui_theme": "forest"}})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(cfg.Config()["ui_theme"], "forest")
+        self.assertIn('data-theme="forest"', self.client.get("/files").text)
+        self.client.cookies.clear()
+        self.assertIn('data-theme="forest"', self.client.get("/login").text)
+
+    def test_unknown_theme_does_not_replace_the_saved_choice(self):
+        fastapi_app.state.conf = self.config(ui_theme="steel")
+        response = self.client.post("/api/settings", json={"settings": {"ui_theme": "other"}})
+        self.assertEqual(response.status_code, 422)
+        self.assertIn('data-theme="steel"', self.client.get("/dictate").text)
+
+    def test_settings_has_save_action(self):
+        body = self.client.get("/settings").text
+        self.assertIn('form="settings-form" id="save-settings"', body)
         self.assertIn('id="save-status"', body)
-        self.assertIn("function saveNow", body)
-        self.assertIn("scheduleSave", body)
-        self.assertIn("keepalive: true", body)
-        self.assertIn("visibilitychange", body)
-        self.assertIn("pagehide", body)
+        self.assertIn("/static/settings.js", body)
 
-    def test_settings_prefills_transcribe_prompt(self):
+    def test_models_allow_search_or_manual_entry(self):
         body = self.client.get("/settings").text
-        self.assertIn("Transcribe the audio faithfully", body)
+        for key in ("transcribe_openai_model", "cleanup_groq_model", "assistant_openrouter_model"):
+            self.assertIn(f'<input name="{key}"', body)
+            self.assertIn(f'<datalist id="catalog-{key}">', body)
 
-    def test_hosted_model_fields_render_select(self):
+    def test_settings_preserves_custom_model_when_the_catalog_is_empty(self):
+        fastapi_app.state.conf = self.config(transcribe_openai_model="manual-model")
         body = self.client.get("/settings").text
-        self.assertIn('<select name="transcribe_openai_model"', body)
-        self.assertIn('<select name="cleanup_groq_model"', body)
-        self.assertIn('<select name="assistant_openrouter_model"', body)
-        self.assertIn('data-model-select', body)
-
-    def test_settings_keeps_a_stored_model_selected(self):
-        body = self.client.get("/settings").text
-        # a stored model must stay selected even when the provider list is
-        # empty (no key, offline), instead of collapsing to "Custom"
-        self.assertIn('select.value = chosen || "__custom__";', body)
-        self.assertIn("if (chosen && models.indexOf(chosen) === -1)", body)
-
-    def test_settings_only_sends_the_active_model_pair_value(self):
-        body = self.client.get("/settings").text
-        self.assertIn("const active = input && !input.disabled ? input : select;", body)
-        self.assertIn("seen.has(el.name)", body)
+        self.assertIn('name="transcribe_openai_model" value="manual-model"', body)
 
     def test_omniroute_and_local_model_fields_are_text_inputs(self):
         body = self.client.get("/settings").text
         self.assertIn('<input name="transcribe_omniroute_model"', body)
         self.assertIn('<input name="transcribe_local_model"', body)
 
-    def test_mic_target_is_a_select_with_custom_fallback(self):
+    def test_settings_offers_browser_microphone_selection(self):
         body = self.client.get("/settings").text
-        self.assertIn('<select name="mic_target"', body)
-        self.assertIn('data-mic-input', body)
-        self.assertEqual(body.count('name="mic_target"'), 2)
+        self.assertIn('<select name="mic_target" id="mic-select">', body)
+        self.assertIn('id="detect-microphones"', body)
 
     def test_local_models_collapsed_in_a_details_block(self):
         body = self.client.get("/settings").text

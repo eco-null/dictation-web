@@ -10,7 +10,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 
 RUN useradd -r -m -d /home/dikte dikte \
-    && mkdir -p /data \
+    && mkdir -p /data/config /data/share \
     && chown -R dikte:dikte /app /data
 
 USER dikte
@@ -18,6 +18,8 @@ USER dikte
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV DIKTE_MAX_UPLOAD=1073741824
+ENV XDG_CONFIG_HOME=/data/config
+ENV XDG_DATA_HOME=/data/share
 
 EXPOSE 8000
 

@@ -9,7 +9,7 @@ import api
 import ggml
 from i18n import t
 
-PROVIDERS = ("openai", "groq", "openrouter", "omniroute", "local")
+PROVIDERS = ("openai", "groq", "openrouter", "omniroute", "custom", "local")
 
 
 class CleanupError(api.ApiError):
@@ -25,19 +25,20 @@ def model(conf):
     return conf[f"cleanup_{provider(conf)}_model"]
 
 
-def run(text, conf, system_prompt, timeout=180, aborter=None):
+def run(text, conf, system_prompt, timeout=180, aborter=None, reasoning=None):
     name = provider(conf)
     if name == "local":
         target = conf.cleanup_target()
-        return api.cleanup(
-            text, api_key="", model=target.model, system_prompt=system_prompt,
-            reasoning=conf["cleanup_local_reasoning"],
-            base_url=api.serving(ggml.llm), timeout=timeout,
-            provider="local-llm", service=t("Local llama.cpp"),
-            aborter=aborter,
-        )
+        with ggml.configured_llm(conf, "cleanup") as server:
+            return api.cleanup(
+                text, api_key="", model=target.model, system_prompt=system_prompt,
+                reasoning=conf["cleanup_local_reasoning"] if reasoning is None else reasoning,
+                base_url=api.serving(server), timeout=timeout,
+                provider="local-llm", service=t("Local llama.cpp"),
+                aborter=aborter,
+            )
     target = conf.cleanup_target()
-    key_required = name != "omniroute"
+    key_required = name not in ("omniroute", "custom")
     if key_required and not target.api_key:
         raise api.ApiError(t("{service} API key is empty. Add it in Settings.",
                              service=target.service))

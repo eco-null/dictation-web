@@ -26,6 +26,7 @@ interface already knows how to show.
 
 import atexit
 import collections
+from contextlib import contextmanager
 import ctypes.util
 import hashlib
 import http.client
@@ -36,12 +37,15 @@ import platform
 import shutil
 import signal
 import socket
+import sys
+import tempfile
 import subprocess
 import tarfile
 import threading
 import time
 import urllib.error
 import urllib.request
+import zipfile
 
 import hub
 from i18n import t
@@ -224,14 +228,40 @@ def _has_vulkan():
     llama.cpp publishes no CUDA build for Linux, so Vulkan is what a graphics
     card gets here. The build without it is smaller and runs on the CPU, and
     fetching the Vulkan one for a machine that cannot load it would only make
-    the download bigger.
+    the download bigger. Windows spells the loader vulkan-1.dll.
     """
-    return bool(ctypes.util.find_library("vulkan"))
+    return bool(ctypes.util.find_library("vulkan")
+                or (sys.platform == "win32"
+                    and ctypes.util.find_library("vulkan-1")))
 
 
 def _wanted_assets(program):
-    """Asset name endings to accept, best first."""
+    """Asset name endings to accept, best first.
+
+    llama.cpp publishes native Metal-enabled macOS archives. whisper.cpp does
+    not publish a runnable macOS server archive, so an arm64 Mac must not
+    mistake Ubuntu's arm64 archive for a native build.
+    """
     arch = _arch()
+    if sys.platform == "darwin":
+        return () if program is WHISPER else (f"bin-macos-{arch}.tar.gz",)
+    if sys.platform == "win32":
+        if program is WHISPER:
+            # Dikte's own Vulkan build is not in this list: it is a release of
+            # Dikte's, not of whisper.cpp, and _pick_asset asks for it first.
+            #
+            # The BLAS build first: on a plain CPU it transcribes about twice
+            # as fast as the stock one, and it carries everything it needs.
+            # Full names, because "bin-x64.zip" alone would also match the
+            # CUDA archives, whichever the release happened to list first.
+            #
+            # x64 whatever this machine is, because whisper.cpp publishes no
+            # arm64 build for Windows: a Snapdragon runs this one emulated,
+            # which is slow but is the only local option there is.
+            return ("whisper-blas-bin-x64.zip", "whisper-bin-x64.zip")
+        if _has_vulkan() and arch == "x64":
+            return ("bin-win-vulkan-x64.zip", f"bin-win-cpu-{arch}.zip")
+        return (f"bin-win-cpu-{arch}.zip",)
     if program is LLAMA and _has_vulkan():
         return (f"bin-ubuntu-vulkan-{arch}.tar.gz", f"bin-ubuntu-{arch}.tar.gz")
     return (f"bin-ubuntu-{arch}.tar.gz",)
@@ -285,68 +315,86 @@ def _find_binary(root, name):
 
 
 def _extract(archive, into):
-    """Unpack a release tarball, refusing anything that reaches outside `into`.
-
-    The archives lay their libraries next to their binaries and are linked with
-    an $ORIGIN runpath, so a whole directory is what has to survive the trip and
-    the binary cannot be lifted out of it.
-    """
+    """Keep the program and its shared libraries together."""
     try:
-        with tarfile.open(archive, "r:gz") as tar:
-            try:
+        if archive.suffix == ".zip":
+            with zipfile.ZipFile(archive) as bundle:
+                bundle.extractall(into)
+        else:
+            with tarfile.open(archive, "r:gz") as tar:
                 tar.extractall(into, filter="data")
-            except TypeError:      # Python without the extraction filters
-                tar.extractall(into)
-    except (tarfile.TarError, OSError) as exc:
+    except (tarfile.TarError, zipfile.BadZipFile, OSError) as exc:
         raise LocalError(t("Could not unpack {name}: {error}",
-                           name=os.path.basename(str(archive)), error=exc)) from exc
+                           name=archive.name, error=exc)) from exc
+
+
+def _pick_download(program, tag, refresh):
+    endings = _wanted_assets(program)
+
+    def match(assets):
+        return next((asset for ending in endings for asset in assets
+                     if asset.sha256 and asset.name.endswith(ending)), None)
+
+    if endings:
+        try:
+            version, assets = hub.release(program.repo, tag or "latest", refresh=refresh)
+        except hub.HubError as exc:
+            if tag and tag != "latest":
+                raise LocalError(str(exc)) from exc
+        else:
+            item = match(assets)
+            if item:
+                return version, item
+
+        if not tag or tag == "latest":
+            try:
+                recent = hub.releases(program.repo, refresh=refresh)
+            except hub.HubError as exc:
+                raise LocalError(str(exc)) from exc
+            for version, assets in recent:
+                item = match(assets)
+                if item:
+                    return version, item
+
+    raise LocalError(t("{repo} {tag} has no build for this machine.",
+                       repo=program.repo, tag=tag or "latest"))
 
 
 def install_program(program, tag="", on_progress=None, should_stop=None,
                     refresh=False):
-    """Fetch and unpack a release. The path to the binary, or "" when stopped.
+    """Publish the verified installation only after its files are complete."""
+    tag, item = _pick_download(program, tag, refresh)
 
-    `tag` is empty for whatever the project released last, which is the point:
-    a version pinned in Dikte's source would mean a release of Dikte every time
-    whisper.cpp has one.
-    """
+    record = _install_record(program)
+    root = record.parent
+    stage = None
+    published = False
     try:
-        tag, assets = hub.release(program.repo, tag or "latest", refresh=refresh)
-    except hub.HubError as exc:
-        raise LocalError(str(exc)) from exc
-
-    item = None
-    for ending in _wanted_assets(program):
-        item = next((a for a in assets if a.name.endswith(ending)), None)
-        if item:
-            break
-    if item is None:
-        raise LocalError(t("{repo} {tag} has no build for this machine.",
-                           repo=program.repo, tag=tag))
-
-    into = BIN_DIR / program.name / tag
-    shutil.rmtree(into, ignore_errors=True)
-    archive = BIN_DIR / program.name / item.name
-    try:
+        root.mkdir(parents=True, exist_ok=True)
+        stage = pathlib.Path(tempfile.mkdtemp(prefix="release-", dir=root))
+        suffix = ".zip" if item.name.endswith(".zip") else ".tar.gz"
+        archive = stage / ("download" + suffix)
         if not download(item, archive, on_progress, should_stop):
             return ""
-        _extract(archive, into)
-        binary = _find_binary(into, program.binary)
+        _extract(archive, stage)
+        archive.unlink()
+        name = program.binary + (".exe" if sys.platform == "win32" else "")
+        binary = _find_binary(stage, name)
         if binary is None:
-            raise LocalError(t("{name} was not in the download.",
-                               name=program.binary))
+            raise LocalError(t("{name} was not in the download.", name=name))
         binary.chmod(binary.stat().st_mode | 0o111)
-        _install_record(program).write_text(
-            json.dumps({"tag": tag, "binary": str(binary)}), encoding="utf-8")
+        pending = stage / "installed.json.tmp"
+        pending.write_text(json.dumps({"tag": tag, "binary": str(binary)}),
+                           encoding="utf-8")
+        pending.replace(record)
+        published = True
     except OSError as exc:
         raise LocalError(t("Could not install {name}: {error}",
                            name=program.name, error=exc)) from exc
     finally:
-        try:
-            archive.unlink(missing_ok=True)
-        except OSError:
-            pass
-    _drop_old_versions(program, keep=tag)
+        if stage is not None and not published:
+            shutil.rmtree(stage, ignore_errors=True)
+    _drop_old_versions(program, keep=stage.name)
     return str(binary)
 
 
@@ -766,6 +814,21 @@ def _llm_args(settings):
     if int(settings["threads"]) > 0:
         args += ["-t", str(int(settings["threads"]))]
     return args
+
+
+llm_use = threading.RLock()
+
+
+@contextmanager
+def configured_llm(conf, role):
+    with llm_use:
+        llm.configure(
+            model=conf[f"{role}_local_model"], threads=int(conf[f"{role}_local_threads"] or 0),
+            gpu=conf[f"{role}_local_gpu"], preload=conf[f"{role}_local_preload"],
+            context=int(conf[f"{role}_local_context"] or 8192),
+            reasoning=conf[f"{role}_local_reasoning"], binary=conf["local_llm_binary"],
+        )
+        yield llm
 
 
 whisper = Server(WHISPER, _whisper_args, {

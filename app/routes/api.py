@@ -2,10 +2,11 @@ import os
 import re
 import shutil
 import tempfile
+import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Body, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 
 import api
 import assistant
@@ -29,11 +30,6 @@ def _valid_base(base):
     return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", base))
 
 
-def _check_duration(duration):
-    if duration > MAX_AUDIO_SECONDS:
-        raise RuntimeError("Recording is longer than the 4 hour limit")
-
-
 def _conf(request):
     return request.app.state.conf
 
@@ -41,7 +37,9 @@ def _conf(request):
 def _save_upload(upload: UploadFile) -> str:
     if upload.size is not None and upload.size > MAX_UPLOAD:
         raise HTTPException(413, detail="upload too large")
-    suffix = os.path.splitext(upload.filename or "")[1]
+    suffix = Path(upload.filename or "").suffix
+    if not re.fullmatch(r"\.[A-Za-z0-9]{1,12}", suffix):
+        suffix = ""
     fd, path = tempfile.mkstemp(prefix="dikte-upload-", suffix=suffix)
     os.close(fd)
     try:
@@ -68,10 +66,12 @@ def _unlink(path):
 def _start(request, kind, work, cleanup=None):
     try:
         job_id = jobs.submit(kind, work)
-    except jobs.BusyError:
+    except Exception as exc:
         if cleanup:
             cleanup()
-        raise HTTPException(409, detail="A job is already running.")
+        if isinstance(exc, jobs.BusyError):
+            raise HTTPException(409, detail="A job is already running.") from exc
+        raise
     return {"job_id": job_id}
 
 
@@ -81,34 +81,14 @@ def _pct(done, total):
     return f"{int(done * 100 / total)}%"
 
 
-def _hydrate_local(conf):
-    if conf["transcribe_provider"] == "local":
+def _hydrate_local(conf, service="transcribe"):
+    if conf[f"{service}_provider"] == "local":
         ggml.whisper.configure(
-            model=conf["transcribe_local_model"],
-            threads=conf["transcribe_local_threads"],
-            gpu=conf["transcribe_local_gpu"],
-            preload=conf["transcribe_local_preload"],
+            model=conf[f"{service}_local_model"],
+            threads=conf[f"{service}_local_threads"],
+            gpu=conf[f"{service}_local_gpu"],
+            preload=conf[f"{service}_local_preload"],
             binary=conf["local_binary"],
-        )
-    if conf["cleanup_provider"] == "local":
-        ggml.llm.configure(
-            model=conf["cleanup_local_model"],
-            threads=conf["cleanup_local_threads"],
-            gpu=conf["cleanup_local_gpu"],
-            preload=conf["cleanup_local_preload"],
-            context=conf["cleanup_local_context"],
-            reasoning=conf["cleanup_local_reasoning"],
-            binary=conf["local_llm_binary"],
-        )
-    if conf["assistant_provider"] == "local":
-        ggml.llm.configure(
-            model=conf["assistant_local_model"],
-            threads=conf["assistant_local_threads"],
-            gpu=conf["assistant_local_gpu"],
-            preload=conf["assistant_local_preload"],
-            context=conf["assistant_local_context"],
-            reasoning=conf["assistant_local_reasoning"],
-            binary=conf["local_llm_binary"],
         )
 
 
@@ -146,8 +126,7 @@ def list_models(request: Request):
 
 
 @router.get("/api/models/list")
-def provider_models(request: Request, provider: str = "", svc: str = "",
-                    url: str = "", key: str = ""):
+def provider_models(request: Request, provider: str = "", svc: str = ""):
     """The model ids a hosted provider offers, for the settings dropdown.
 
     The key and the base URL are read out of the per-service settings, not taken
@@ -162,8 +141,8 @@ def provider_models(request: Request, provider: str = "", svc: str = "",
     target = conf.target_for(svc, provider)
     if target is not None and target.provider not in ("omniroute", "local"):
         try:
-            models = api.list_models(target.provider, key or target.api_key,
-                                     url or target.base_url)
+            models = api.list_models(target.provider, target.api_key, target.base_url,
+                                     transcription=svc in ("transcribe", "meeting"))
         except Exception as exc:
             error = str(exc)
     return {"models": models, "error": error}
@@ -178,6 +157,8 @@ def install_model(request: Request, payload: dict = Body(...)):
 
     if kind == "program" and name not in ("whisper", "llama"):
         raise HTTPException(400, detail="unknown program")
+    if kind not in ("program", "whisper", "llm"):
+        raise HTTPException(400, detail="unknown kind")
     if kind == "llm" and repo not in ggml.llm_repos():
         raise HTTPException(400, detail="repo not allowed")
 
@@ -193,30 +174,30 @@ def install_model(request: Request, payload: dict = Body(...)):
         if kind == "whisper":
             item = next((m for m in ggml.whisper_models() if m.name == name), None)
             if item is None:
-                raise HTTPException(404, detail="no such whisper model")
+                raise ValueError("No such Whisper model.")
             target = ggml.whisper_model_path(name)
             ok = ggml.download(item, target,
                                on_progress=lambda done, total:
                                    emit(f"Downloading… {_pct(done, total)}"))
-            if ok:
-                conf["transcribe_local_model"] = name
-                conf["local_model"] = name
-                conf.save()
-            return {"path": str(target), "installed": ok}
+            if not ok:
+                raise RuntimeError("Model installation stopped.")
+            web_settings.apply(conf, {"transcribe_local_model": name})
+            return {"path": str(target), "installed": True}
         if kind == "llm":
             item = next((q for q in ggml.llm_quants(repo) if q.name == name), None)
             if item is None:
-                raise HTTPException(404, detail="no such model")
+                raise ValueError("No such language model.")
             target = ggml.llm_model_path(name)
             ok = ggml.download(item, target,
                                on_progress=lambda done, total:
                                    emit(f"Downloading… {_pct(done, total)}"))
-            if ok:
-                conf["cleanup_local_model"] = name
-                conf["assistant_local_model"] = name
-                conf["local_llm_model"] = name
-                conf.save()
-            return {"path": str(target), "installed": ok}
+            if not ok:
+                raise RuntimeError("Model installation stopped.")
+            updates = {key: name for key in ("cleanup_local_model", "assistant_local_model")
+                       if not conf[key]}
+            if updates:
+                web_settings.apply(conf, updates)
+            return {"path": str(target), "installed": True}
         raise HTTPException(400, detail="unknown kind")
 
     return _start(request, "model", work)
@@ -229,10 +210,15 @@ def delete_model_route(request: Request, payload: dict = Body(...)):
         raise HTTPException(400, detail="no path")
     resolved = Path(path).resolve()
     models_dir = Path(ggml.MODELS_DIR).resolve()
-    if not resolved.is_relative_to(models_dir):
+    allowed = (models_dir / "whisper", models_dir / "llm")
+    if resolved.parent not in allowed or resolved.suffix.lower() not in (".bin", ".gguf"):
         raise HTTPException(400, detail="path outside the models directory")
     try:
-        ggml.delete_model(path)
+        with jobs.exclusive():
+            with ggml.llm_use:
+                ggml.delete_model(resolved)
+    except jobs.BusyError as exc:
+        raise HTTPException(409, detail="A job is already running.") from exc
     except ggml.LocalError as exc:
         raise HTTPException(400, detail=str(exc))
     return {"deleted": True}
@@ -247,78 +233,79 @@ def job_status(request: Request, job_id: str):
 
 
 @router.post("/api/dictate")
-async def dictate(request: Request, audio: UploadFile = File(...)):
+def dictate(request: Request, audio: UploadFile = File(...), ask: bool = Form(False)):
     path = _save_upload(audio)
-    conf = _conf(request)
+    conf = web_settings.snapshot(_conf(request))
+    limit = min(MAX_AUDIO_SECONDS, conf["max_seconds"] or MAX_AUDIO_SECONDS)
 
     def work(emit):
-        _hydrate_local(conf)
-        workdir = tempfile.mkdtemp(prefix="dikte-dict-")
         try:
-            wav = ft._to_wav(path, workdir)
-            duration = ft.wav_seconds(wav)
-            _check_duration(duration)
-            rms_values = rms.series(wav)
-            pipeline = worker.Pipeline(conf)
-            pipeline.stage.connect(emit)
-            raw, text, warning = pipeline.run(wav, duration, rms_values)
-            return {"raw": raw, "text": text, "warning": warning}
+            _hydrate_local(conf)
+            with tempfile.TemporaryDirectory(prefix="dikte-dict-") as folder:
+                emit(api.t("Converting audio…"))
+                wav = ft._to_wav(path, folder, max_seconds=limit + 2)
+                duration = ft.wav_seconds(wav)
+                if duration > limit + 2:
+                    raise api.ApiError(api.t("The recording exceeds the configured time limit."))
+                pipeline = worker.Pipeline(conf)
+                pipeline.stage.connect(emit)
+                raw, text, warning = pipeline.run(wav, duration, rms.series(wav), ask=ask)
+                entry = pipeline.history_entry
+                return {"raw": raw, "text": text, "warning": warning,
+                        "ts": entry["ts"], "model": entry["model"], "mode": entry["mode"]}
         finally:
-            shutil.rmtree(workdir, ignore_errors=True)
-            if os.path.exists(path):
-                os.unlink(path)
+            _unlink(path)
 
     return _start(request, "dictation", work, cleanup=lambda: _unlink(path))
 
 
 @router.post("/api/files/transcribe")
-async def transcribe_file(request: Request, file: UploadFile = File(...),
-                          timestamps: str = Form(""),
-                          cleanup: str = Form("")):
+def transcribe_file(request: Request, file: UploadFile = File(...),
+                    timestamps: str = Form(""), cleanup: str = Form(""),
+                    wrap: str | None = Form(None)):
     path = _save_upload(file)
-    conf = _conf(request)
+    conf = web_settings.snapshot(_conf(request))
     want_ts = timestamps == "on"
     do_cleanup = cleanup == "on"
+    wrap_srt = conf["file_wrap_srt"] if wrap is None else wrap == "on"
 
     def work(emit):
-        _hydrate_local(conf)
-        if not shutil.which("ffmpeg"):
-            raise api.ApiError(
-                api.t("ffmpeg not found. Install it to transcribe files."))
-        workdir = tempfile.mkdtemp(prefix="dikte-file-")
         try:
-            wav = ft._to_wav(path, workdir)
-            _check_duration(ft.wav_seconds(wav))
+            _hydrate_local(conf)
             transcriber = ft.FileTranscriber(conf)
             transcriber.progress.connect(emit)
-            text, segments = transcriber.transcribe(wav, want_ts, do_cleanup)
-            srt = ft.to_srt(text, segments) if want_ts else ""
+            text, segments = transcriber.transcribe(path, want_ts, do_cleanup,
+                                                     max_seconds=MAX_AUDIO_SECONDS)
+            srt = ft.to_srt(text, segments, wrap=wrap_srt) if want_ts else ""
             return {"text": text, "segments": [list(s) for s in segments],
-                    "srt": srt}
+                    "srt": srt, "warning": transcriber.warning}
         finally:
-            shutil.rmtree(workdir, ignore_errors=True)
-            if os.path.exists(path):
-                os.unlink(path)
+            _unlink(path)
 
     return _start(request, "file", work, cleanup=lambda: _unlink(path))
 
 
 @router.get("/api/jobs/{job_id}/download")
-def download(request: Request, job_id: str, fmt: str = "txt"):
+def download(request: Request, job_id: str, fmt: str = "txt", format: str | None = None):
     job = jobs.get(job_id)
     if job is None or not job.result:
         raise HTTPException(404, detail="no such job")
-    if fmt == "srt" and job.result.get("srt"):
+    fmt = format or fmt
+    if fmt == "srt":
+        if not job.result.get("srt"):
+            raise HTTPException(404, detail="This job has no subtitles.")
         body, name = job.result["srt"], "transcript.srt"
-    else:
+    elif fmt == "txt":
         body, name = job.result.get("text", ""), "transcript.txt"
+    else:
+        raise HTTPException(400, detail="Unknown download format.")
     return Response(content=body, media_type="text/plain",
                     headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
-def _meeting_wav(path, workdir):
+def _meeting_wav(path, workdir, limit):
     out = os.path.join(workdir, "meeting.wav")
-    return ft._ffmpeg(["-i", path, "-vn", "-ar", "16000",
+    return ft._ffmpeg(["-i", path, "-vn", "-t", str(limit + 1), "-ar", "16000",
                        "-c:a", "pcm_s16le", out], out)
 
 
@@ -330,42 +317,46 @@ def list_meetings(request: Request):
 
 
 @router.post("/api/meetings")
-async def create_meeting(request: Request, file: UploadFile = File(...),
+def create_meeting(request: Request, file: UploadFile = File(...),
                          participants: str = Form("")):
     path = _save_upload(file)
-    conf = _conf(request)
+    conf = web_settings.snapshot(_conf(request))
+    limit = min(MAX_AUDIO_SECONDS, conf["meeting_max_seconds"] or MAX_AUDIO_SECONDS)
+    if participants.strip():
+        conf["meeting_participants"] = participants.strip()[:4000]
 
     def work(emit):
-        _hydrate_local(conf)
-        workdir = tempfile.mkdtemp(prefix="dikte-meet-")
         try:
-            wav = _meeting_wav(path, workdir)
-            duration = ft.wav_seconds(wav)
-            _check_duration(duration)
-            base = meeting.new_base()
-            if not _valid_base(base):
-                raise RuntimeError("invalid meeting id")
-            entry = meeting.new_entry(base, duration)
-            cfg.save_meeting(entry)
-            target_wav = cfg.meeting_paths(base)[1]
-            target_wav.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(wav, target_wav)
-            if participants.strip():
-                conf["meeting_participants"] = participants
-            pipeline = meeting.MeetingPipeline(conf)
-            pipeline.progress.connect(lambda b, msg: emit(msg))
-            title = pipeline.run(entry)
-            return {"base": base, "title": title}
+            _hydrate_local(conf, "meeting")
+            with tempfile.TemporaryDirectory(prefix="dikte-meet-") as folder:
+                emit(api.t("Converting audio…"))
+                wav = _meeting_wav(path, folder, limit)
+                duration = ft.wav_seconds(wav)
+                if duration > limit:
+                    raise api.ApiError(api.t("The recording exceeds the configured time limit."))
+                base = f"{meeting.new_base()}-{uuid.uuid4().hex[:12]}"
+                entry = meeting.new_entry(base, duration)
+                entry["participants"] = conf["meeting_participants"]
+                target_wav = cfg.meeting_paths(base)[1]
+                target_wav.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(wav, target_wav)
+                try:
+                    cfg.save_meeting(entry)
+                except Exception:
+                    _unlink(target_wav)
+                    raise
+                pipeline = meeting.MeetingPipeline(conf)
+                pipeline.progress.connect(lambda base, msg: emit(msg))
+                title = pipeline.run(entry)
+                return {"base": base, "title": title}
         finally:
-            shutil.rmtree(workdir, ignore_errors=True)
-            if os.path.exists(path):
-                os.unlink(path)
+            _unlink(path)
 
     return _start(request, "meeting", work, cleanup=lambda: _unlink(path))
 
 
 @router.get("/api/meetings/{base}")
-def meeting_detail(request: Request, base: str):
+def meeting_detail(base: str):
     if not _valid_base(base):
         raise HTTPException(400, detail="invalid meeting id")
     row = next((r for r in cfg.read_meetings() if r["base"] == base), None)
@@ -376,6 +367,15 @@ def meeting_detail(request: Request, base: str):
     return {"meeting": row, "doc": doc}
 
 
+@router.get("/api/meetings/{base}/download")
+def download_meeting(base: str):
+    doc = meeting_detail(base)["doc"]
+    if not doc:
+        raise HTTPException(404, detail="No minutes are available.")
+    return Response(doc, media_type="text/markdown",
+                    headers={"Content-Disposition": 'attachment; filename="meeting.md"'})
+
+
 @router.post("/api/meetings/{base}/retry")
 def retry_meeting(request: Request, base: str):
     if not _valid_base(base):
@@ -383,10 +383,12 @@ def retry_meeting(request: Request, base: str):
     row = next((r for r in cfg.read_meetings() if r["base"] == base), None)
     if row is None:
         raise HTTPException(404)
-    conf = _conf(request)
+    conf = web_settings.snapshot(_conf(request))
+    if "participants" in row:
+        conf["meeting_participants"] = row["participants"]
 
     def work(emit):
-        _hydrate_local(conf)
+        _hydrate_local(conf, "meeting")
         pipeline = meeting.MeetingPipeline(conf)
         pipeline.progress.connect(lambda b, msg: emit(msg))
         title = pipeline.run(row)
@@ -401,7 +403,11 @@ def delete_meeting(request: Request, base: str):
         raise HTTPException(400, detail="invalid meeting id")
     if not any(row["base"] == base for row in cfg.read_meetings()):
         raise HTTPException(404)
-    cfg.delete_meetings([base])
+    try:
+        with jobs.exclusive():
+            cfg.delete_meetings([base])
+    except jobs.BusyError as exc:
+        raise HTTPException(409, detail="A job is already running.") from exc
     return {"deleted": base}
 
 
@@ -412,8 +418,7 @@ def ask_agent(request: Request, payload: dict = Body(...)):
         raise HTTPException(400, detail="empty question")
     if len(question) > MAX_QUESTION_CHARS:
         raise HTTPException(400, detail="question too long")
-    conf = _conf(request)
-    _hydrate_local(conf)
+    conf = web_settings.snapshot(_conf(request))
     try:
         answer, _warning = assistant.ask(
             question, conf,
@@ -432,9 +437,21 @@ def history(request: Request):
     return {"entries": rows}
 
 
+@router.get("/api/history/recordings/{name}")
+def download_recording(name: str):
+    if not re.fullmatch(r"[a-f0-9]{32}\.wav", name):
+        raise HTTPException(404)
+    path = cfg.DATA_DIR / "recordings" / name
+    if not path.is_file():
+        raise HTTPException(404)
+    return FileResponse(path, media_type="audio/wav", filename="recording.wav")
+
+
 @router.delete("/api/history")
 def delete_history(request: Request, payload: dict = Body(...)):
     rows = payload.get("rows") or []
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise HTTPException(422, detail="Invalid history rows.")
     cfg.delete_history(rows)
     return {"deleted": len(rows)}
 
@@ -452,6 +469,11 @@ def get_settings(request: Request):
 
 @router.post("/api/settings")
 def post_settings(request: Request, payload: dict = Body(...)):
-    print(f"dikte-web: POST /api/settings keys={sorted((payload.get('settings') or {}).keys())}", flush=True)
-    web_settings.apply(_conf(request), payload.get("settings") or {})
+    updates = payload.get("settings", {})
+    if not isinstance(updates, dict):
+        raise HTTPException(422, detail="Invalid settings.")
+    try:
+        web_settings.apply(_conf(request), updates)
+    except ValueError as exc:
+        raise HTTPException(422, detail=str(exc)) from exc
     return {"saved": True}

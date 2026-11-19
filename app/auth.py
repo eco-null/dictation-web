@@ -3,6 +3,7 @@ import hmac
 import os
 import secrets
 import sys
+import threading
 import time
 
 import config as cfg
@@ -12,7 +13,15 @@ SESSION_HOURS = 24 * 7
 _pepper = secrets.token_bytes(32)
 
 
+_password_lock = threading.Lock()
+
+
 def password():
+    with _password_lock:
+        return _read_or_generate_password()
+
+
+def _read_or_generate_password():
     stored = os.environ.get("DIKTE_WEB_PASSWORD", "").strip()
     if stored:
         return stored
@@ -22,7 +31,7 @@ def password():
             return saved
     except OSError:
         pass
-    generated = secrets.token_urlsafe(9)
+    generated = secrets.token_urlsafe(18)
     try:
         cfg.DATA_DIR.mkdir(parents=True, exist_ok=True)
         target = cfg.DATA_DIR / "web_password"
@@ -50,7 +59,7 @@ def check(token) -> bool:
         value, sig = token.rsplit(".", 1)
     except ValueError:
         return False
-    if not hmac.compare_digest(_sig(value), sig):
+    if not hmac.compare_digest(_sig(value).encode(), sig.encode()):
         return False
     try:
         ts = float(value.split(".", 1)[0])

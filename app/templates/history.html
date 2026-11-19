@@ -1,32 +1,34 @@
 {% extends "base.html" %}
-{% block head %}<meta http-equiv="Cache-Control" content="no-store">{% endblock %}
+{% block title %}{{ t('History') }}{% endblock %}
 {% block content %}
-<section class="card">
-  <h1>{{ t("History") }}</h1>
-  <div class="row">
-    <button class="btn btn-danger" id="clear" hx-post="/api/history/clear"
-            hx-swap="none" hx-on::after-request="location.reload()">{{ t("Clear history") }}</button>
+<header class="page-head"><div><h1>{{ t('History') }}</h1><p>{{ t('Find, copy or delete earlier dictations.') }}</p></div></header>
+<section class="history-panel" data-history>
+  {% if entries %}
+  <div class="history-tools">
+    <label class="field search-field">{{ t('Search history') }}<input id="history-search" type="search" placeholder="{{ t('Search transcript, date or model') }}"></label>
+    <div class="row">
+      <button class="btn" id="delete-selected" disabled>{{ t('Delete selected') }}</button>
+      <button class="btn btn-danger" id="clear">{{ t('Clear history') }}</button>
+    </div>
   </div>
-  <table class="table">
-    <thead><tr><th></th><th>{{ t("Transcript") }}</th><th>{{ t("Model") }}</th><th></th></tr></thead>
-    <tbody>
-      {% for e in entries %}
-      <tr id="row-{{ loop.index }}">
-        <td><input type="checkbox" value='{{ e|tojson|forceescape }}' class="row-check" aria-label="{{ t('Select') }}"></td>
-        <td class="transcript-cell">{{ e.text[:120] }}</td>
-        <td>{{ e.model }}</td>
-        <td><button class="btn btn-sm" data-copy data-target="#row-{{ loop.index }}">{{ t("Copy") }}</button></td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  <button class="btn" id="delete-selected">{{ t("Delete selected") }}</button>
+  <p class="stage" id="stage" role="status"></p>
+  <p class="empty-row" id="empty-search" hidden>{{ t('No matching dictations.') }}</p>
+  <ul class="activity-list">
+  {% for e in entries %}
+    <li data-history-row>
+      <input type="checkbox" value="{{ e|tojson|forceescape }}" class="row-check" aria-label="{{ t('Select dictation') }} {{ loop.index }}">
+      <details class="history-entry">
+        <summary><span>{{ e.text|truncate(112, true) }}</span><small>{{ e.ts }}{% if e.model %} · {{ e.model }}{% endif %}</small></summary>
+        <p id="transcript-{{ loop.index }}">{{ e.text }}</p>
+        {% if e.raw and e.raw != e.text %}<details><summary>{{ t('Original text') }}</summary><p>{{ e.raw }}</p></details>{% endif %}
+      </details>
+      <div class="row">
+        {% if e.recording %}<a class="btn btn-sm btn-ghost" href="/api/history/recordings/{{ e.recording }}">{{ t('Audio') }}</a>{% endif %}
+        <button class="btn btn-sm" data-copy data-target="#transcript-{{ loop.index }}">{{ t('Copy') }}</button>
+      </div>
+    </li>
+  {% endfor %}
+  </ul>
+  {% else %}<p class="empty-row">{{ t('Completed dictations will appear here.') }} <a href="/dictate">{{ t('Dictation') }} ›</a></p>{% endif %}
 </section>
-<script>
-  document.getElementById("delete-selected").addEventListener("click", async () => {
-    const rows = [...document.querySelectorAll(".row-check:checked")].map((c) => JSON.parse(c.value));
-    await fetch("/api/history", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rows }) });
-    location.reload();
-  });
-</script>
 {% endblock %}

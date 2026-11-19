@@ -6,7 +6,7 @@ import time
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import RedirectResponse
 
-from app import auth
+from app import auth, settings as web_settings
 
 router = APIRouter()
 
@@ -15,42 +15,48 @@ LOGIN_WINDOW = 15 * 60
 _login_failures = {}
 _login_failures_lock = threading.Lock()
 
-PROVIDER_ORDER = ["openai", "groq", "openrouter", "omniroute", "local"]
-SERVICE_ORDER = ["transcribe", "cleanup", "assistant", "meeting"]
+PROVIDERS = [
+    ("openai", "OpenAI"), ("groq", "Groq"), ("openrouter", "OpenRouter"),
+    ("omniroute", "OmniRoute"), ("custom", "Custom server"), ("local", "Local"),
+]
 
+SERVICE_TITLES = {
+    "transcribe": "Transcription", "cleanup": "Cleanup",
+    "assistant": "Assistant", "meeting": "Meetings",
+}
+
+SERVICE_KEYS = {
+    "transcribe": [
+        ("language", "Speech language"), ("transcribe_prompt", "Transcription prompt"),
+        ("dictionary", "Dictionary"), ("file_timestamps", "Include timestamps and SRT"),
+        ("file_wrap_srt", "Wrap longer subtitles"), ("file_cleanup", "Clean up file transcripts"),
+    ],
+    "cleanup": [
+        ("cleanup_enabled", "Clean up dictations"), ("cleanup_reasoning", "Reasoning"),
+        ("writing_style", "Writing instructions"), ("translate_to", "Translate dictation to"),
+        ("cleanup_prompt", "Cleanup prompt"), ("file_cleanup_prompt", "File cleanup prompt"),
+    ],
+    "assistant": [
+        ("assistant_session_minutes", "Conversation retention (minutes)"),
+        ("assistant_timeout", "Request timeout (seconds)"), ("assistant_reasoning", "Reasoning"),
+        ("assistant_prompt", "Assistant prompt"),
+    ],
+    "meeting": [
+        ("meeting_language", "Speech language"), ("meeting_cleanup", "Clean up the transcript"),
+        ("meeting_reasoning", "Reasoning"), ("meeting_summary_model", "OpenRouter summary model"),
+        ("meeting_self_name", "Your name"), ("meeting_other_name", "Other speaker"),
+        ("meeting_participants", "Participants"), ("meeting_keep_audio", "Keep meeting audio"),
+        ("meeting_max_seconds", "Meeting limit (seconds)"), ("meeting_prompt", "Meeting prompt"),
+    ],
+}
 GENERAL_KEYS = [
-    "ui_language", "transcribe_prompt",
-    "skip_silent", "silence_db", "speech_margin_db",
-    "min_voiced_seconds", "filter_hallucinations",
-    "history_limit", "mic_target", "keep_audio",
-    "max_seconds", "file_timestamps", "file_cleanup",
-    "file_cleanup_prompt", "cleanup_enabled",
-    "cleanup_reasoning", "cleanup_prompt",
-    "assistant_reasoning", "assistant_prompt",
-    "assistant_session_minutes", "assistant_timeout",
+    ("ui_language", "Interface language"), ("mic_target", "Microphone"),
+    ("max_seconds", "Recording limit (seconds)"), ("history_limit", "History limit"),
+    ("keep_audio", "Keep dictation audio"), ("skip_silent", "Skip silent recordings"),
+    ("silence_db", "Silence floor (dB)"), ("speech_margin_db", "Speech margin (dB)"),
+    ("min_voiced_seconds", "Minimum speech (seconds)"),
+    ("filter_hallucinations", "Filter stock phrases"),
 ]
-
-MEETING_KEYS = [
-    "meeting_cleanup", "meeting_reasoning",
-    "meeting_prompt", "meeting_max_seconds", "meeting_keep_audio",
-    "meeting_self_name", "meeting_other_name", "meeting_participants",
-]
-
-
-def _service_spec(service):
-    spec = {
-        "key": service,
-        "title": {
-            "transcribe": "Transcription",
-            "cleanup": "Cleanup",
-            "assistant": "Assistant",
-            "meeting": "Meetings",
-        }[service],
-        "providers": [],
-    }
-    for p in PROVIDER_ORDER:
-        spec["providers"].append({"name": p})
-    return spec
 
 
 def _env_bool(name, default):
@@ -60,6 +66,7 @@ def _env_bool(name, default):
 def _render(request, template, context=None, status_code=200):
     ctx = dict(context or {})
     ctx.setdefault("current_path", request.url.path)
+    ctx["ui_theme"] = web_settings.theme(request.app.state.conf)
     return request.app.state.templates.TemplateResponse(
         request, template, ctx, status_code=status_code)
 
@@ -118,7 +125,7 @@ def login_post(request: Request, password: str = Form("")):
         return _render(request, "login.html",
                        {"error": "Too many failed attempts. Try again later."},
                        status_code=429)
-    if not hmac.compare_digest(password, auth.password()):
+    if not hmac.compare_digest(password.encode(), auth.password().encode()):
         _record_login_failure(ip)
         return _render(request, "login.html",
                        {"error": "Wrong password."})
@@ -141,8 +148,14 @@ def logout():
 
 @router.get("/dictate")
 def dictate_page(request: Request):
-    return _render(request, "dictation.html",
-                   {"conf": request.app.state.conf})
+    import config as cfg
+    conf = request.app.state.conf
+    return _render(request, "dictation.html", {
+        "conf": conf,
+        "provider_ready": conf.transcribe_ready(),
+        "recording_limit": min(14400, conf["max_seconds"] or 14400),
+        "entries": list(reversed(cfg.read_history(limit=4))),
+    })
 
 
 @router.get("/files")
@@ -174,7 +187,7 @@ def meeting_detail_page(request: Request, base: str):
 
 @router.get("/agent")
 def agent_page(request: Request):
-    return _render(request, "agent.html", {"conf": request.app.state.conf})
+    return _render(request, "agent.html", {"providers": PROVIDERS})
 
 
 @router.get("/history")
@@ -188,26 +201,19 @@ def history_page(request: Request):
 
 @router.get("/settings")
 def settings_page(request: Request):
-    from app import settings as web_settings
-    import config as cfg
-    services = [_service_spec(s) for s in SERVICE_ORDER]
+    services = [
+        {"key": key, "title": title,
+         "providers": [{"name": value, "label": label} for value, label in PROVIDERS]}
+        for key, title in SERVICE_TITLES.items()
+    ]
     display = web_settings.present(request.app.state.conf)
-    prompt_defaults = {
-        "transcribe_prompt": cfg.default_transcribe_prompt,
-        "file_cleanup_prompt": cfg.default_file_cleanup_prompt,
-        "cleanup_prompt": cfg.default_cleanup_prompt,
-        "meeting_prompt": cfg.default_meeting_prompt,
-        "assistant_prompt": cfg.default_assistant_prompt,
-    }
-    for key, factory in prompt_defaults.items():
-        if not (display.get(key) or "").strip():
-            display[key] = factory()
     return _render(request, "settings.html", {
+        "themes": web_settings.THEMES,
         "fields": web_settings.WEB_FIELDS,
         "settings": display,
         "masked": web_settings.MASKED,
         "conf": request.app.state.conf,
         "services": services,
         "general_keys": GENERAL_KEYS,
-        "meeting_keys": MEETING_KEYS,
+        "service_keys": SERVICE_KEYS,
     })

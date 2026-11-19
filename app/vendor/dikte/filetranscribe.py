@@ -21,6 +21,7 @@ import tempfile
 import wave
 
 from .signals import Signal
+from . import srtwrap
 
 import api
 import cleanup
@@ -44,24 +45,30 @@ Cancelled = api.Aborted
 
 
 class FileTranscriber:
-    progress = Signal()
-
     def __init__(self, conf):
+        self.progress = Signal()
+        self.warning = ""
         self.conf = conf
         self._abort = api.Aborter()
 
-    def transcribe(self, path, timestamps, do_cleanup):
+    def transcribe(self, path, timestamps, do_cleanup, max_seconds=None):
         """Çağıran thread'de çalışır; (text, segments) döndürür."""
-        return self._work(path, timestamps, do_cleanup)
+        self.warning = ""
+        return self._work(path, timestamps, do_cleanup, max_seconds)
 
-    def _work(self, path, timestamps, do_cleanup):
+    def _work(self, path, timestamps, do_cleanup, max_seconds=None):
         conf = self.conf
         if not shutil.which("ffmpeg"):
             raise api.ApiError(t("ffmpeg not found. Install it to transcribe files."))
         workdir = tempfile.mkdtemp(prefix="dikte-file-")
         try:
             self.progress.emit(t("Converting audio…"))
-            wav_path = _to_wav(path, workdir, self._abort)
+            wav_path = (
+                _to_wav(path, workdir, self._abort, max_seconds=max_seconds)
+                if max_seconds is not None else _to_wav(path, workdir, self._abort)
+            )
+            if max_seconds is not None and wav_seconds(wav_path) > max_seconds:
+                raise api.ApiError(t("The recording exceeds the configured time limit."))
             self._abort.check()
 
             target = conf.transcribe_target()
@@ -106,7 +113,15 @@ class FileTranscriber:
             if do_cleanup and text:
                 self._abort.check()
                 self.progress.emit(t("Cleaning up…"))
-                text = self._cleanup(text, timestamps)
+                try:
+                    cleaned = self._cleanup(text, timestamps)
+                    if timestamps and [STAMP_RE.match(line)[0] for line in cleaned.splitlines()
+                                       if STAMP_RE.match(line)] != [STAMP_RE.match(line)[0]
+                                       for line in text.splitlines() if STAMP_RE.match(line)]:
+                        raise api.ApiError(t("Cleanup changed subtitle timestamps. The original text was kept."))
+                    text = cleaned
+                except api.ApiError as exc:
+                    self.warning = str(exc)
 
             return text, segments
         finally:
@@ -114,6 +129,8 @@ class FileTranscriber:
 
     def _chunks(self, wav_path, workdir, target, timestamps):
         """[(the file to send, its offset in seconds)], one entry where it can be."""
+        if target.provider == "local":
+            return [(wav_path, 0.0)]
         whole = _to_mp3(wav_path, workdir, "audio.mp3", self._abort)
         seconds = chunk_seconds(whole, wav_seconds(wav_path))
         if not seconds:
@@ -152,14 +169,15 @@ def srt_timestamp(seconds):
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 
-def to_srt(text, segments):
+def to_srt(text, segments, wrap=False):
     """Turn the timestamped transcript into SRT cues.
 
     The text is the authority on wording, so cleanup edits survive; the segments
     are the authority on timing. They meet at the [mm:ss] prefix, which cleanup
     is told to leave alone: a line's whole-second stamp finds the segment it came
     from, and with it the fractional start and the end time whisper reported. A
-    line whose stamp finds nothing runs until the next line starts.
+    line whose stamp finds nothing runs until the next line starts. With wrap,
+    a cue too long for one subtitle line is broken into balanced lines.
     """
     cues = []
     for line in text.splitlines():
@@ -177,11 +195,20 @@ def to_srt(text, segments):
         hours, minutes, secs = (int(g or 0) for g in match.groups())
         cues.append([hours * 3600 + minutes * 60 + secs, None, body])
 
+    # Several cues can share a whole second, so a second holds every segment
+    # that began in it and they are handed out in the order they were spoken.
     timing = {}
     for start, end, _ in segments:
-        timing.setdefault(int(start), (start, end))
+        timing.setdefault(int(start), []).append((start, end))
     for cue in cues:
-        cue[0], cue[1] = timing.get(cue[0], (float(cue[0]), 0.0))
+        found = timing.get(cue[0])
+        if found:
+            # The last one stays, so a second with more lines than it has
+            # timings hands the last of them out again rather than falling back
+            # to the bare second, which would run backwards from the line above.
+            cue[0], cue[1] = found.pop(0) if len(found) > 1 else found[0]
+        else:
+            cue[0], cue[1] = float(cue[0]), 0.0
     for index, cue in enumerate(cues):
         following = cues[index + 1][0] if index + 1 < len(cues) else 0.0
         if following > cue[0]:
@@ -190,7 +217,8 @@ def to_srt(text, segments):
             cue[1] = cue[0] + MIN_SUBTITLE_SECONDS
 
     blocks = [
-        f"{number}\n{srt_timestamp(start)} --> {srt_timestamp(end)}\n{body}"
+        f"{number}\n{srt_timestamp(start)} --> {srt_timestamp(end)}\n"
+        f"{srtwrap.wrap(body) if wrap else body}"
         for number, (start, end, body) in enumerate(cues, start=1)
     ]
     return "\n\n".join(blocks) + "\n" if blocks else ""
@@ -203,9 +231,10 @@ def _reap(proc):
         proc.wait()
 
 
-def _to_wav(path, workdir, aborter=None):
+def _to_wav(path, workdir, aborter=None, *, max_seconds=None):
     out = os.path.join(workdir, "audio.wav")
-    return _ffmpeg(["-i", path, "-vn", "-ac", "1", "-ar", str(RATE),
+    limit = ["-t", str(max_seconds + 1)] if max_seconds is not None else []
+    return _ffmpeg(["-i", path, "-vn", *limit, "-ac", "1", "-ar", str(RATE),
                     "-c:a", "pcm_s16le", out], out, aborter)
 
 
@@ -232,7 +261,7 @@ def _ffmpeg(args, out, aborter=None):
     proc = subprocess.Popen(
         ["ffmpeg", "-nostdin", "-y", *args],
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True,
+        encoding="utf-8", errors="replace",
     )
     # A two hour film is a minute of ffmpeg, which is a minute of a Stop button
     # doing nothing unless the abort reaches the process itself.

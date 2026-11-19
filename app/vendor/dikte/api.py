@@ -70,7 +70,7 @@ def timestamp_model(provider, selected=""):
     local server runs, whatever the file is called, and there asking for another
     model would name one it has never heard of.
     """
-    if provider in ("groq", "local"):
+    if provider in ("groq", "local", "custom", "omniroute"):
         return selected or "whisper-large-v3-turbo"
     return "openai/whisper-1" if provider == "openrouter" else "whisper-1"
 
@@ -351,7 +351,7 @@ def _transcribe_request(target, audio_path, language, prompt, response_format,
     # An OmniRoute-style agent is allowed to run without a key, the same way
     # cleanup and chat let it; transcribe_ready() already counts it as ready
     # with nothing set. Asking it for a made-up bearer token gains nothing.
-    elif not target.api_key and target.provider != "omniroute":
+    elif not target.api_key and target.provider not in ("omniroute", "custom"):
         raise ApiError(t("{service} API key is empty. Add it in Settings.",
                          service=target.service))
     _assert_safe_url(target.base_url)
@@ -441,6 +441,91 @@ def transcribe(target, audio_path, language="", prompt="", timeout=300, aborter=
     return text
 
 
+MAX_CUE_SECONDS = 7.0
+MAX_CUE_CHARS = 84
+MIN_CUE_SECONDS = 1.2
+
+
+# No whisper segment is longer than the window it was heard in, so a segment
+# that runs past this came from a model that is not marking segments at all.
+WHISPER_WINDOW = 30.0
+SENTENCE_END = ".!?…"
+
+
+def _too_coarse(segments):
+    """Whether these segments are too long to be cues, or are not there at all.
+
+    Not every model behind /audio/transcriptions marks segments the way whisper
+    does. Some fill the field with one entry per paragraph, or with a single one
+    covering the whole file, which turns a fourteen minute video into three
+    subtitles. Word times are what those models do give, and cues built from
+    them are better than what the segments would have been.
+    """
+    if not segments:
+        return True
+    return any(float(seg.get("end") or 0.0) - float(seg.get("start") or 0.0)
+               > WHISPER_WINDOW for seg in segments)
+
+
+def cues_from_words(words):
+    """[(start, end, text)] cut out of word times, where segments were no use.
+
+    A cue ends where a sentence does, and failing that wherever it has grown too
+    long to read or too long to leave up. Nothing is ever cut between two words:
+    the times that arrive are per word, and so are the ones that leave.
+    """
+    cues = []
+    start = end = 0.0
+    current = []
+
+    def flush():
+        nonlocal current
+        if current:
+            cues.append((start, max(end, start), " ".join(current)))
+            current = []
+
+    for word in words:
+        text = (word.get("word") or "").strip()
+        if not text:
+            continue
+        at = float(word.get("start") or 0.0)
+        until = float(word.get("end") or at)
+        if current:
+            grown = len(" ".join(current)) + 1 + len(text)
+            if grown > MAX_CUE_CHARS or until - start > MAX_CUE_SECONDS:
+                flush()
+        if not current:
+            start = at
+        current.append(text)
+        end = until
+        # A sentence can end inside the punctuation that closes a quote. What
+        # is too short to have been a sentence is a list marker or a shortened
+        # word, and the cue goes on rather than ending on it.
+        if (end - start >= MIN_CUE_SECONDS
+                and text.rstrip("\"')]»”’").endswith(tuple(SENTENCE_END))):
+            flush()
+    flush()
+    return _held(cues)
+
+
+def _held(cues):
+    """Keep a cue that is still too short on screen, without covering the next.
+
+    A one word sentence is a fifth of a second of audio and so a fifth of a
+    second of subtitle, which is a flicker. It stays up until the cue after it
+    starts, or for as long as it takes to read, whichever comes first.
+    """
+    out = []
+    for index, (start, end, text) in enumerate(cues):
+        if end - start < MIN_CUE_SECONDS:
+            room = start + MIN_CUE_SECONDS
+            if index + 1 < len(cues):
+                room = min(room, cues[index + 1][0])
+            end = max(end, room)
+        out.append((start, end, text))
+    return out
+
+
 def transcribe_segments(target, audio_path, language="", prompt="", timeout=300,
                         aborter=None):
     """[(start_seconds, end_seconds, text)] using whisper-1's verbose response."""
@@ -452,6 +537,22 @@ def transcribe_segments(target, audio_path, language="", prompt="", timeout=300,
     segments = data.get("segments") or []
     if target.provider == "local":
         segments = _merge_word_splits(segments)
+    elif _too_coarse(segments):
+        words = data.get("words") or []
+        if not words and target.provider in ("openai", "openrouter") and segments:
+            try:
+                fine = _transcribe_request(
+                    target._replace(model=timestamp_model(target.provider, target.model)),
+                    audio_path, language, prompt, "verbose_json", granularity="word",
+                    timeout=timeout, aborter=aborter,
+                )
+                words = fine.get("words") or []
+            except ApiError:
+                pass
+        if words:
+            cues = cues_from_words(words)
+            if cues:
+                return cues
     out = []
     for seg in segments:
         text = (seg.get("text") or "").strip()
@@ -506,7 +607,7 @@ def local_ceiling(text):
 def cleanup(text, api_key, model, system_prompt, reasoning="",
             base_url=OPENROUTER_URL, timeout=180, provider="openrouter",
             service="OpenRouter", aborter=None):
-    if not api_key and provider not in ("local-llm", "omniroute"):
+    if not api_key and provider not in ("local-llm", "omniroute", "custom"):
         raise ApiError(t("{service} API key is empty. Add it in Settings.",
                          service=service))
     _assert_safe_url(base_url)
@@ -605,8 +706,7 @@ def chat(messages, api_key, model, system_prompt, reasoning="",
     }
     if model:
         payload["model"] = model
-    if reasoning:
-        payload["reasoning"] = {"effort": reasoning, "exclude": True}
+    _thinking(payload, provider, reasoning)
     try:
         data = _request(
             f"{base_url.rstrip('/')}/chat/completions",
@@ -709,7 +809,7 @@ def groq_models(api_key, base_url=GROQ_URL):
     return openai_models(api_key, base_url, "Groq")
 
 
-def list_models(provider, api_key="", base_url=""):
+def list_models(provider, api_key="", base_url="", *, transcription=None):
     """The model ids a provider can be asked to use, or [] when it cannot say.
 
     openai and groq are read from their OpenAI-compatible /models endpoint and
@@ -720,12 +820,25 @@ def list_models(provider, api_key="", base_url=""):
     to typing the id in.
     """
     try:
+        if (provider in ("openai", "groq") and transcription is False) or provider == "custom":
+            endpoint = base_url or (OPENAI_URL if provider == "openai" else GROQ_URL)
+            if provider == "custom" and not base_url:
+                return []
+            _assert_safe_url(endpoint)
+            headers = _headers(provider, api_key)
+            return sorted(item["id"] for item in _get_json(endpoint.rstrip("/") + "/models",
+                                                           headers).get("data", [])
+                          if item.get("id"))
         if provider == "openai":
+            if base_url:
+                _assert_safe_url(base_url)
             return openai_models(api_key, base_url or OPENAI_URL)
         if provider == "groq":
+            if base_url:
+                _assert_safe_url(base_url)
             return groq_models(api_key, base_url or GROQ_URL)
         if provider == "openrouter":
-            return openrouter_models(api_key)
+            return openrouter_models(api_key, transcription=True) if transcription is True else openrouter_models(api_key)
     except ApiError:
         pass
     return []

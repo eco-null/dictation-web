@@ -1,24 +1,27 @@
 services:
   dikte-web:
-    image: ghcr.io/eco-null/dikte-web:latest
+    image: "${DIKTE_IMAGE:-ghcr.io/eco-null/dictation-web:latest}"
     pull_policy: always
-    icon: "https://github.com/eco-null/dikte-web/blob/main/icon.png?raw=true"
     container_name: dikte-web
     restart: unless-stopped
     ports:
-      - "8245:8000"
+      - "${DIKTE_BIND_ADDRESS:-127.0.0.1}:${DIKTE_PORT:-8245}:8000"
     environment:
-      DIKTE_WEB_PASSWORD: "CHANGE_ME"
-      DIKTE_COOKIE_SECURE: "1"
+      DIKTE_WEB_PASSWORD: "${DIKTE_WEB_PASSWORD:-}"
+      DIKTE_COOKIE_SECURE: "${DIKTE_COOKIE_SECURE:-1}"
+      DIKTE_MAX_UPLOAD: "${DIKTE_MAX_UPLOAD:-1073741824}"
       XDG_CONFIG_HOME: /data/config
       XDG_DATA_HOME: /data/share
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - /DATA/AppData/dikte-web:/data
+      - "${DIKTE_DATA_DIR:-/DATA/AppData/dikte-web}:/data"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
+
+volumes:
+  dikte_data:

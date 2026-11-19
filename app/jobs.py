@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 import threading
 import time
 import uuid
@@ -42,24 +43,43 @@ class JobManager:
             job = Job(kind)
             self._jobs[job.id] = job
             self._busy = job.id
-            self._prune()
 
         def run():
-            job.status = "running"
-            job.started = time.time()
+            with self._lock:
+                job.status = "running"
+                job.started = time.time()
+            result, error = None, "Job interrupted."
             try:
-                job.result = work(lambda text: self._stage(job, text))
-                job.status = "done"
+                result = work(lambda text: self._stage(job, text))
             except Exception as exc:
-                job.status = "failed"
-                job.error = str(exc)
+                error = str(exc) or type(exc).__name__
+                result = None
+            else:
+                error = ""
             finally:
-                job.finished = time.time()
                 with self._lock:
+                    job.result = result
+                    job.error = error
+                    job.finished = time.time()
+                    job.status = "failed" if error else "done"
                     self._busy = None
+                    self._prune()
 
-        threading.Thread(target=run, daemon=True).start()
+        try:
+            threading.Thread(target=run, daemon=True).start()
+        except RuntimeError:
+            with self._lock:
+                self._jobs.pop(job.id, None)
+                self._busy = None
+            raise
         return job.id
+
+    @contextmanager
+    def exclusive(self):
+        with self._lock:
+            if self._busy is not None:
+                raise BusyError()
+            yield
 
     def _stage(self, job, text):
         with self._lock:
@@ -86,3 +106,7 @@ def submit(kind, work):
 
 def get(job_id):
     return _manager.get(job_id)
+
+
+def exclusive():
+    return _manager.exclusive()

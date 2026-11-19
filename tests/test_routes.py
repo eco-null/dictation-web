@@ -44,6 +44,21 @@ class RouteTest(DikteTest):
         self.fail("job did not finish")
 
 class Dictation(RouteTest):
+    def test_voice_question_uses_the_assistant(self):
+        clip = make_wav(self.path("question.wav"), speech(1.0))
+        with mock.patch("filetranscribe._to_wav", return_value=str(clip)), \
+                mock.patch("api.transcribe", return_value="Kayıt başarılı mı?"), \
+                mock.patch("assistant.ask", return_value=("Evet.", "")) as ask:
+            resp = self.client.post("/api/dictate",
+                                    files={"audio": ("voice.wav", b"audio", "audio/wav")},
+                                    data={"ask": "true"})
+            job = self.wait_job(resp.json()["job_id"])
+        self.assertEqual(job["status"], "done", job)
+        self.assertEqual(job["result"]["mode"], "ask")
+        self.assertEqual(job["result"]["raw"], "Kayıt başarılı mı?")
+        self.assertEqual(job["result"]["text"], "Evet.")
+        self.assertEqual(ask.call_args.args[0], "Kayıt başarılı mı?")
+
     def test_a_recording_comes_back(self):
         clip = make_wav(self.path("clip.wav"), speech(1.0))
         with mock.patch("filetranscribe._to_wav", return_value=str(clip)):
@@ -66,7 +81,7 @@ class Dictation(RouteTest):
                 files={"audio": ("rec.webm", b"fake-webm", "audio/webm")})
             job = self.wait_job(resp.json()["job_id"])
         self.assertEqual(job["status"], "failed")
-        self.assertIn("4 hour limit", job["error"])
+        self.assertIn("time limit", job["error"])
 
     def test_second_job_while_busy_is_409(self):
         held = {}
@@ -214,6 +229,13 @@ class ModelList(RouteTest):
         self.assertEqual(resp.status_code, 401)
 
 class Files(RouteTest):
+    def test_download_uses_the_requested_format(self):
+        job_id = jobs.submit("file", lambda emit: {"text": "text"})
+        self.wait_job(job_id)
+        path = f"/api/jobs/{job_id}/download"
+        self.assertEqual(self.client.get(path, params={"format": "txt"}).text, "text")
+        self.assertEqual(self.client.get(path, params={"format": "srt"}).status_code, 404)
+
     def test_a_file_transcribes_and_downloads(self):
         clip = make_wav(self.path("clip.wav"), speech(1.0))
         with mock.patch("filetranscribe._to_wav", return_value=str(clip)), \
@@ -250,7 +272,7 @@ class Files(RouteTest):
                 data={"timestamps": "", "cleanup": ""})
             job = self.wait_job(resp.json()["job_id"])
         self.assertEqual(job["status"], "failed")
-        self.assertIn("4 hour limit", job["error"])
+        self.assertIn("time limit", job["error"])
 
 class Downloads(RouteTest):
     def test_download_404_for_unknown_job(self):
@@ -356,11 +378,11 @@ class Meetings(RouteTest):
 
     def test_retry_hydrates_the_local_server(self):
         conf = cfg.Config()
-        web_settings.apply(conf, {"transcribe_provider": "local",
+        web_settings.apply(conf, {"meeting_provider": "local",
                                   "cleanup_enabled": False})
         conf["cleanup_openrouter_key"] = "sk-or-test"
         conf["openrouter_api_key"] = "sk-or-test"
-        conf["transcribe_local_model"] = "ggml-small.bin"
+        conf["meeting_local_model"] = "ggml-small.bin"
         from app.main import app as fastapi_app
         fastapi_app.state.conf = conf
         base = "20260101-140000"
@@ -387,7 +409,7 @@ class Meetings(RouteTest):
             resp = self.client.post(f"/api/meetings/{base}/retry")
             job = self.wait_job(resp.json()["job_id"])
         self.assertEqual(job["status"], "done", job)
-        cfgw.assert_called()
+        self.assertEqual(cfgw.call_args.kwargs["model"], "ggml-small.bin")
 
 class Agent(RouteTest):
     def test_a_question_is_answered(self):
@@ -395,6 +417,19 @@ class Agent(RouteTest):
             resp = self.client.post("/api/agent", json={"question": "merhaba"})
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["answer"], "cevap")
+
+    def test_hosted_model_override_and_zero_retention(self):
+        from app.main import app as fastapi_app
+        fastapi_app.state.conf = self.config(assistant_session_minutes=0)
+        with mock.patch("assistant.read_messages") as read, \
+                mock.patch("assistant.write_session") as write, \
+                mock.patch("api.chat", return_value="response") as chat:
+            resp = self.client.post("/api/agent",
+                                    json={"question": "test", "model": "chosen"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(chat.call_args.kwargs["model"], "chosen")
+        read.assert_not_called()
+        write.assert_not_called()
 
     def test_an_empty_question_is_rejected(self):
         resp = self.client.post("/api/agent", json={"question": "  "})

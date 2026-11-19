@@ -163,5 +163,41 @@ class GgmlServer(DikteTest):
         ggml.stop_all()
         self.assertIsNone(ggml.whisper._proc)
 
+
+class ProgramInstall(DikteTest):
+    def setUp(self):
+        super().setUp()
+        self.patch_attr(ggml, "BIN_DIR", self.path("data", "bin"))
+
+    def test_assetless_latest_uses_recent_builds_with_verified_assets(self):
+        unsigned = hub.Item("whisper-bin-x64.zip", "https://example.test/no.zip", 10, "")
+        verified = unsigned._replace(sha256="test-hash")
+        with mock.patch("ggml.sys.platform", "win32"), \
+                mock.patch("ggml.hub.release", side_effect=hub.HubError("no stable assets")), \
+                mock.patch("ggml.hub.releases", return_value=[
+                    ("newest", [unsigned]), ("compatible", [verified])
+                ]):
+            self.assertEqual(ggml._pick_download(ggml.WHISPER, "", False),
+                             ("compatible", verified))
+
+    def test_windows_zip_keeps_the_previous_install_if_unpacking_fails(self):
+        import zipfile
+        item = hub.Item("whisper-bin-x64.zip", "https://example.test/whisper.zip", 10, "hash")
+
+        def fake_download(item, archive, *_):
+            with zipfile.ZipFile(archive, "w") as bundle:
+                bundle.writestr("Release/whisper-server.exe", b"program")
+            return True
+
+        with mock.patch("ggml.sys.platform", "win32"), \
+                mock.patch("ggml.hub.release", return_value=("v1", [item])), \
+                mock.patch("ggml.download", side_effect=fake_download):
+            installed = ggml.install_program(ggml.WHISPER)
+            self.assertTrue(installed.endswith("whisper-server.exe"))
+            with mock.patch("ggml._extract", side_effect=ggml.LocalError("bad package")):
+                with self.assertRaises(ggml.LocalError):
+                    ggml.install_program(ggml.WHISPER)
+        self.assertEqual(ggml.installed_program(ggml.WHISPER), installed)
+
 if __name__ == "__main__":
     unittest.main()

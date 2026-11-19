@@ -58,9 +58,8 @@ LEVEL_FRAMES = 1024
 class MeetingPipeline:
     """Transcribe, clean up and summarise a recorded meeting."""
 
-    progress = Signal()     # (base, message)
-
     def __init__(self, conf):
+        self.progress = Signal()
         self.conf = conf
 
     def run(self, entry):
@@ -71,12 +70,12 @@ class MeetingPipeline:
         return self._work(dict(entry))
 
     def _say(self, message):
-        self.progress.emit("", message)
+        self.progress.emit(self.base, message)
 
     # ---- the chain -------------------------------------------------------
 
     def _work(self, entry):
-        base = entry["base"]
+        base = self.base = entry["base"]
         doc_path, wav_path = cfg.meeting_paths(base)
         workdir = None
         try:
@@ -96,20 +95,21 @@ class MeetingPipeline:
 
             self._say(t("Writing the minutes…"))
             target = self.conf.cleanup_target()
-            minutes = api.cleanup(
-                transcript,
-                target.api_key,
-                target.model,
-                self.conf.meeting_prompt(),
-                reasoning=self.conf["meeting_reasoning"],
-                base_url=target.base_url,
-                timeout=600,
-                provider=target.provider,
-                service=target.service,
-            )
+            model = (self.conf["meeting_summary_model"] or target.model
+                     if target.provider == "openrouter" else target.model)
+            if target.provider == "local":
+                minutes = cleanup.run(transcript, self.conf, self.conf.meeting_prompt(),
+                                      timeout=600, reasoning=self.conf["meeting_reasoning"] or None)
+            else:
+                minutes = api.cleanup(
+                    transcript, target.api_key, model,
+                    self.conf.meeting_prompt(), reasoning=self.conf["meeting_reasoning"],
+                    base_url=target.base_url, timeout=600, provider=target.provider,
+                    service=target.service,
+                )
             title = self._write(doc_path, minutes, transcript, entry)
             cfg.update_meeting(base, status="done", error="", title=title,
-                               model=target.model)
+                               model=model)
             self._discard_audio(wav_path)
             return title
 
@@ -124,7 +124,7 @@ class MeetingPipeline:
 
     def _stored_transcript(self, entry, doc_path):
         """The transcript an earlier run already paid for, or ''."""
-        if entry.get("status") not in ("transcribed", "done"):
+        if entry.get("status") not in ("transcribed", "done", "failed"):
             return ""
         try:
             return read_transcript(doc_path.read_text(encoding="utf-8"))
@@ -139,7 +139,10 @@ class MeetingPipeline:
         hint = conf.meeting_hint()
 
         segments = []
-        for path, speaker in ((mine, "mine"), (theirs, "theirs")):
+        channels = ((mine, "mine"), (theirs, "theirs"))
+        if is_mono(wav_path):
+            channels = channels[1:]
+        for path, speaker in channels:
             side = t("you") if speaker == "mine" else t("the others")
             # A directory each: the chunk files are named by their index, and
             # the second channel would otherwise write over the first one's.
@@ -213,6 +216,11 @@ class MeetingPipeline:
 
 
 # --- audio ----------------------------------------------------------------
+
+def is_mono(path):
+    with wave.open(path, "rb") as wav:
+        return wav.getnchannels() == 1
+
 
 def split_channels(path, workdir):
     """Kaydı (mine, theirs) mono dosyalara ayırır.

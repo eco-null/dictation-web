@@ -239,6 +239,18 @@ class Pipeline(DikteTest):
         self.assertEqual(row["status"], "done")
         self.assertEqual(row["title"], "Kickoff")
 
+    def test_minutes_use_the_existing_cleanup_model_without_an_override(self):
+        self.conf["meeting_cleanup"] = False
+        self.conf["cleanup_openrouter_model"] = "custom/cleanup-model"
+        self.run_pipeline()
+        self.assertEqual(cfg.read_meetings()[0]["model"], "custom/cleanup-model")
+
+    def test_minutes_use_the_explicit_openrouter_override(self):
+        self.conf["meeting_cleanup"] = False
+        self.conf["meeting_summary_model"] = "google/gemini-3.5-flash"
+        self.run_pipeline()
+        self.assertEqual(cfg.read_meetings()[0]["model"], "google/gemini-3.5-flash")
+
     def test_the_audio_goes_once_the_minutes_are_written(self):
         self.run_pipeline()
         self.assertFalse(self.wav.exists())
@@ -265,7 +277,7 @@ class Pipeline(DikteTest):
         with mock.patch.object(api, "transcribe_segments") as transcribe, \
                 mock.patch.object(api, "cleanup", return_value="# Kickoff\n\nAgreed."):
             worker = meeting.MeetingPipeline(self.conf)
-            worker._work(dict(entry, status="transcribed"))
+            worker.run(entry)
         transcribe.assert_not_called()
         self.assertEqual(cfg.read_meetings()[0]["status"], "done")
 

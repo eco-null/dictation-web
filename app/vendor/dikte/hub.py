@@ -123,6 +123,12 @@ def _digest(value):
     return value.split(":", 1)[1] if value.startswith("sha256:") else value
 
 
+def _assets(data):
+    return [Item(asset.get("name") or "", asset["browser_download_url"],
+                 int(asset.get("size") or 0), _digest(asset.get("digest")))
+            for asset in data.get("assets", []) if asset.get("browser_download_url")]
+
+
 def release(repo, tag="latest", refresh=False):
     """(tag, [Item]) for one GitHub release, newest when no tag is given."""
     where = "latest" if tag in ("", "latest") else f"tags/{tag}"
@@ -130,10 +136,17 @@ def release(repo, tag="latest", refresh=False):
                   f"{GITHUB_API}/repos/{repo}/releases/{where}", refresh=refresh)
     if not isinstance(data, dict) or not data.get("assets"):
         raise HubError(t("{repo} has no downloadable release.", repo=repo))
-    assets = [Item(a.get("name") or "", a.get("browser_download_url") or "",
-                   int(a.get("size") or 0), _digest(a.get("digest")))
-              for a in data["assets"] if a.get("browser_download_url")]
-    return data.get("tag_name") or tag, assets
+    return data.get("tag_name") or tag, _assets(data)
+
+
+def releases(repo, limit=20, refresh=False):
+    """Recent tagged builds with assets, including prereleases."""
+    data = _fetch(f"gh-list-{repo}-{limit}",
+                  f"{GITHUB_API}/repos/{repo}/releases?per_page={limit}", refresh=refresh)
+    if not isinstance(data, list):
+        raise HubError(t("{repo} has no downloadable release.", repo=repo))
+    return [(entry["tag_name"], _assets(entry)) for entry in data
+            if entry.get("tag_name") and entry.get("assets")]
 
 
 def files(repo, revision="main", refresh=False):

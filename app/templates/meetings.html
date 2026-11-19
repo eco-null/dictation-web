@@ -1,65 +1,32 @@
 {% extends "base.html" %}
-{% block head %}<meta http-equiv="Cache-Control" content="no-store">{% endblock %}
+{% from "_upload.html" import upload with context %}
+{% block title %}{{ t('Meetings') }}{% endblock %}
 {% block content %}
-<section class="card">
-  <h1>{{ t("Meeting minutes") }}</h1>
-  <form id="meet-form" class="stack">
-    <label class="field">{{ t("File") }} <input type="file" name="file" accept="audio/*,video/*" required></label>
-    <label class="field">{{ t("Participants") }} <textarea name="participants" rows="2" placeholder="{{ t('One name per line') }}"></textarea></label>
-    <button class="btn btn-primary" type="submit">{{ t("Upload") }}</button>
-  </form>
-  <p id="stage" class="stage" role="status"></p>
-</section>
-<section class="card">
-  <h2>{{ t("History") }}</h2>
-  <div class="meeting-list">
-    {% for m in meetings %}
-    <article class="meeting-card">
-      <div class="meeting-info">
-        <a class="meeting-title" href="/meetings/{{ m.base }}">{{ m.title or m.ts }}</a>
-        <span class="meta">{{ m.model or t('—') }}</span>
-        <span class="badge status-{{ m.status }}">{{ m.status }}</span>
-      </div>
+<header class="page-head"><div><h1>{{ t('Meetings') }}</h1><p>{{ t('Generate meeting minutes from a recording.') }}</p></div></header>
+<div class="studio meetings-grid" data-meetings>
+  <section class="card">
+    <header class="panel-head"><h2>{{ t('New meeting') }}</h2></header>
+    <form class="panel-body stack" data-job-form data-meeting-form action="/api/meetings" method="post" enctype="multipart/form-data">
+      {{ upload() }}
+      <label class="field">{{ t('Participants') }} <textarea name="participants" rows="2" placeholder="{{ t('One name per line') }}" maxlength="4000"></textarea></label>
+      <button class="btn btn-primary" type="submit">{{ t('Generate minutes') }}</button>
+      <p class="stage" id="stage" data-stage role="status"></p>
+    </form>
+  </section>
+  <section class="list-panel">
+    <header class="section-head"><h2>{{ t('Saved meetings') }}</h2></header>
+    <p class="stage" data-meeting-stage role="status"></p>
+    {% if meetings %}
+    <ul class="activity-list">
+      {% for m in meetings %}
+      <li><div><a class="meeting-title" href="/meetings/{{ m.base }}">{{ m.title or m.ts }}</a><small>{{ m.ts }} · {{ t(m.status) }}</small></div>
       <div class="row">
-        {% if m.status in ('recorded','failed') %}
-        <button class="btn btn-sm" data-retry="{{ m.base }}">{{ t("Retry") }}</button>
-        {% endif %}
-        <button class="btn btn-danger btn-sm" data-del="{{ m.base }}">{{ t("Delete") }}</button>
-      </div>
-    </article>
-    {% endfor %}
-  </div>
-</section>
-<script>
-  const stage = document.getElementById("stage");
-  document.getElementById("meet-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    stage.textContent = "Uploading…";
-    const resp = await fetch("/api/meetings", { method: "POST", body: fd });
-    if (resp.status === 409) { stage.textContent = "Busy, one job at a time"; return; }
-    if (!resp.ok) { stage.textContent = (await resp.json()).detail || resp.status; return; }
-    const { job_id } = await resp.json();
-    const tick = async () => {
-      const job = await (await fetch("/api/jobs/" + job_id)).json();
-      stage.textContent = job.status === "running" ? (job.stage || "Working…") : job.status;
-      if (job.status === "done" || job.status === "failed") { location.reload(); return; }
-      setTimeout(tick, 2000);
-    };
-    tick();
-  });
-  document.addEventListener("click", async (e) => {
-    const retry = e.target.closest("[data-retry]");
-    if (retry) {
-      stage.textContent = "Working…";
-      await fetch("/api/meetings/" + retry.dataset.retry + "/retry", { method: "POST" });
-      location.reload();
-    }
-    const del = e.target.closest("[data-del]");
-    if (del) {
-      await fetch("/api/meetings/" + del.dataset.del, { method: "DELETE" });
-      location.reload();
-    }
-  });
-</script>
+        {% if m.status in ('recorded','failed','transcribed') %}<button class="btn btn-sm" data-retry="{{ m.base }}">{{ t('Retry') }}</button>{% endif %}
+        <button class="btn btn-ghost btn-sm" data-delete-meeting="{{ m.base }}">{{ t('Delete') }}</button>
+      </div></li>
+      {% endfor %}
+    </ul>
+    {% else %}<p class="empty-row">{{ t('Saved meetings will appear here.') }}</p>{% endif %}
+  </section>
+</div>
 {% endblock %}

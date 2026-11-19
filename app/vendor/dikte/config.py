@@ -1,6 +1,9 @@
 """Settings storage in ~/.config/dikte/config.json"""
 
 import collections
+from functools import wraps
+import threading
+import re
 import hashlib
 import json
 import os
@@ -373,6 +376,7 @@ Söylenen kelimeleri aynen yaz; temizleme, özetleme, çevirme ya da ekleme yapm
 şeyi atlama ya da kısaltma."""
 
 DEFAULTS = {
+    "ui_theme": "postready-dark",
     "ui_language": "auto",          # auto | tr | en
     "openai_api_key": "",
     "openai_base_url": "https://api.openai.com/v1",
@@ -444,6 +448,13 @@ DEFAULTS = {
     "keep_audio": False,
     "history_limit": 200,
     "file_timestamps": False,
+    "file_wrap_srt": True,
+    **{f"{service}_custom_{field}": ""
+       for service in ("transcribe", "cleanup", "assistant", "meeting")
+       for field in ("url", "key", "model")},
+    "dictionary": "",
+    "writing_style": "",
+    "translate_to": "",
     "file_cleanup": True,
     "file_cleanup_prompt": "",      # empty -> language-specific default
     "file_last_dir": "",
@@ -471,7 +482,8 @@ DEFAULTS = {
     "meeting_local_threads": 0,
     "meeting_local_gpu": True,
     "meeting_local_preload": True,
-    "meeting_model": "google/gemini-3.5-flash",
+    "meeting_model": "google/gemini-3.5-flash",  # legacy setting
+    "meeting_summary_model": "",   # OpenRouter override, otherwise use the cleanup model
     "meeting_reasoning": "",
     "meeting_prompt": "",           # empty -> language-specific default
     "meeting_self_name": "",        # empty -> "Me" in the interface language
@@ -627,24 +639,29 @@ _CORNER_MIGRATION = {
 
 
 class Config:
-    def __init__(self):
+    def __init__(self, set_language=True):
         self.data = dict(DEFAULTS)
-        self.load()
+        self.load(set_language=set_language)
 
-    def load(self):
+    def load(self, set_language=True):
+        stored = {}
         try:
             with open(CONFIG_FILE, encoding="utf-8") as fh:
                 stored = json.load(fh)
             if isinstance(stored, dict):
                 self.data.update({k: v for k, v in stored.items() if k in DEFAULTS})
+                legacy_summary = stored.get("meeting_model")
+                if ("meeting_summary_model" not in stored and isinstance(legacy_summary, str)
+                        and legacy_summary != DEFAULTS["meeting_model"]):
+                    self.data["meeting_summary_model"] = legacy_summary
         except FileNotFoundError:
             pass
         except (json.JSONDecodeError, OSError) as exc:
             print(f"dikte: could not read settings ({exc}), using defaults")
         for new, legacy in LEGACY_KEY_MAP.items():
-            # Copy the old value over only when the new key is still its default,
-            # i.e. the user never set it under the new scheme.
-            if self.data.get(new) == DEFAULTS.get(new) and self.data.get(legacy):
+            # A stored per-service value takes precedence, including an empty
+            # key explicitly cleared by the user.
+            if (not isinstance(stored, dict) or new not in stored) and self.data.get(legacy):
                 self.data[new] = self.data[legacy]
         self.data["overlay_corner"] = _CORNER_MIGRATION.get(
             self.data["overlay_corner"], self.data["overlay_corner"]
@@ -652,7 +669,8 @@ class Config:
         stored_prompt = self.data["cleanup_prompt"].strip()
         if stored_prompt and _fingerprint(stored_prompt) in LEGACY_PROMPTS:
             self.data["cleanup_prompt"] = ""
-        i18n.set_language(self.data["ui_language"])
+        if set_language:
+            i18n.set_language(self.data["ui_language"])
 
     def save(self):
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -662,6 +680,11 @@ class Config:
         os.chmod(tmp, 0o600)
         tmp.replace(CONFIG_FILE)
         i18n.set_language(self.data["ui_language"])
+
+    def snapshot(self):
+        copy = self.__class__.__new__(self.__class__)
+        copy.data = self.data.copy()
+        return copy
 
     def __getitem__(self, key):
         return self.data.get(key, DEFAULTS.get(key))
@@ -710,6 +733,8 @@ class Config:
             service_name = t("Groq")
         elif name == "openrouter":
             service_name = t("OpenRouter")
+        elif name == "custom":
+            service_name = t("Custom server")
         else:
             service_name = t("OmniRoute")
         return api.Target(name, service_name, key, url, model)
@@ -724,25 +749,25 @@ class Config:
         anyway.
         """
         name = self["transcribe_provider"]
-        if name not in ("openai", "groq", "openrouter", "omniroute", "local"):
+        if name not in ("openai", "groq", "openrouter", "omniroute", "custom", "local"):
             name = "openai"
         return self._target("transcribe", name)
 
     def cleanup_target(self):
         name = self["cleanup_provider"]
-        if name not in ("openai", "groq", "openrouter", "omniroute", "local"):
+        if name not in ("openai", "groq", "openrouter", "omniroute", "custom", "local"):
             name = "openrouter"
         return self._target("cleanup", name)
 
     def assistant_target(self):
         name = self["assistant_provider"]
-        if name not in ("openai", "groq", "openrouter", "omniroute", "local"):
+        if name not in ("openai", "groq", "openrouter", "omniroute", "custom", "local"):
             name = "openrouter"
         return self._target("assistant", name)
 
     def meeting_target(self):
         name = self["meeting_provider"]
-        if name not in ("openai", "groq", "openrouter", "omniroute", "local"):
+        if name not in ("openai", "groq", "openrouter", "omniroute", "custom", "local"):
             name = "openrouter"
         return self._target("meeting", name)
 
@@ -754,7 +779,7 @@ class Config:
         """
         if service not in ("transcribe", "cleanup", "assistant", "meeting"):
             return None
-        if provider not in ("openai", "groq", "openrouter", "omniroute", "local"):
+        if provider not in ("openai", "groq", "openrouter", "omniroute", "custom", "local"):
             return None
         return self._target(service, provider)
 
@@ -763,12 +788,12 @@ class Config:
         if self["transcribe_provider"] == "local":
             return self.local_whisper_ready()
         target = self.transcribe_target()
-        return bool(target.api_key) or target.provider == "omniroute"
+        return bool(target.base_url and (target.api_key or target.provider in ("omniroute", "custom")))
 
     def local_whisper_ready(self):
         return bool(ggml.program_path(ggml.WHISPER, self["local_binary"])
-                    and self["local_model"]
-                    and ggml.have_model(ggml.whisper_model_path(self["local_model"])))
+                    and self["transcribe_local_model"]
+                    and ggml.have_model(ggml.whisper_model_path(self["transcribe_local_model"])))
 
     def local_llm_ready(self):
         return bool(ggml.program_path(ggml.LLAMA, self["local_llm_binary"])
@@ -818,15 +843,17 @@ class Config:
     def transcribe_prompt_text(self):
         """The initial prompt sent to the speech model. An empty setting means
         "use the built-in default", like every other prompt in the settings."""
-        return self["transcribe_prompt"].strip() or default_transcribe_prompt()
+        prompt = self["transcribe_prompt"].strip() or default_transcribe_prompt()
+        terms = self["dictionary"].strip()
+        return f"{prompt}\n{terms[:400]}" if terms else prompt
 
     def transcribe_glossary(self):
         """Only what the user actually typed; the built-in default is not a
         glossary of terms, so it must not reach the cleanup prompt either."""
         stored = self["transcribe_prompt"].strip()
         if stored in (TRANSCRIBE_PROMPT_EN, TRANSCRIBE_PROMPT_TR):
-            return ""
-        return stored
+            stored = ""
+        return "\n".join(value for value in (stored, self["dictionary"].strip()) if value)
 
     def assistant_prompt(self):
         return self["assistant_prompt"].strip() or default_assistant_prompt()
@@ -893,12 +920,28 @@ def default_assistant_prompt():
     return ASSISTANT_PROMPT_TR if i18n.language() == "tr" else ASSISTANT_PROMPT_EN
 
 
+_history_lock = threading.RLock()
+_meeting_lock = threading.RLock()
+
+
+def _synchronized(lock):
+    def decorate(function):
+        @wraps(function)
+        def locked(*args, **kwargs):
+            with lock:
+                return function(*args, **kwargs)
+        return locked
+    return decorate
+
+
+@_synchronized(_history_lock)
 def append_history(entry):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     with open(HISTORY_FILE, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
+@_synchronized(_history_lock)
 def read_history(limit=None):
     """Newest last. A limit of None (or 0) reads the whole file."""
     try:
@@ -911,7 +954,9 @@ def read_history(limit=None):
     out = []
     for line in lines:
         try:
-            out.append(json.loads(line))
+            row = json.loads(line)
+            if isinstance(row, dict):
+                out.append(row)
         except json.JSONDecodeError:
             continue
     return out
@@ -926,6 +971,7 @@ def _write_history(lines):
     tmp.replace(HISTORY_FILE)
 
 
+@_synchronized(_history_lock)
 def trim_history(limit):
     """Drop the oldest entries once the file passes `limit` rows. 0 means keep all."""
     if not limit or limit < 0:
@@ -937,26 +983,44 @@ def trim_history(limit):
         return
     if len(lines) <= limit:
         return
+    rows = read_history()
     _write_history(lines[-limit:])
+    _remove_recordings(rows[:-limit])
 
 
 def _row_key(row):
     return json.dumps(row, ensure_ascii=False, sort_keys=True)
 
 
+@_synchronized(_history_lock)
 def delete_history(rows):
     """Remove the given entries, matched on their whole content rather than on a
     line number: the worker may have appended a new one since the list was read."""
     doomed = {_row_key(row) for row in rows}
     if not doomed:
         return
+    rows = read_history()
     kept = [json.dumps(row, ensure_ascii=False) + "\n"
-            for row in read_history() if _row_key(row) not in doomed]
+            for row in rows if _row_key(row) not in doomed]
     _write_history(kept)
+    _remove_recordings(row for row in rows if _row_key(row) in doomed)
 
 
+@_synchronized(_history_lock)
 def clear_history():
+    rows = read_history()
     HISTORY_FILE.unlink(missing_ok=True)
+    _remove_recordings(rows)
+
+
+def _remove_recordings(rows):
+    for row in rows:
+        name = row.get("recording", "")
+        if isinstance(name, str) and re.fullmatch(r"[a-f0-9]{32}\.wav", name):
+            try:
+                (DATA_DIR / "recordings" / name).unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 # --- meetings -------------------------------------------------------------
@@ -970,6 +1034,7 @@ def meeting_paths(base):
     return MEETINGS_DIR / f"{base}.md", MEETINGS_DIR / f"{base}.wav"
 
 
+@_synchronized(_meeting_lock)
 def read_meetings():
     """Newest last."""
     try:
@@ -997,6 +1062,7 @@ def _write_meetings(rows):
     tmp.replace(MEETINGS_FILE)
 
 
+@_synchronized(_meeting_lock)
 def save_meeting(entry):
     """Insert the row, or replace the one with the same base."""
     rows = read_meetings()
@@ -1009,6 +1075,7 @@ def save_meeting(entry):
     _write_meetings(rows)
 
 
+@_synchronized(_meeting_lock)
 def update_meeting(base, **changes):
     """Patch one row and hand it back, or None when it is gone."""
     rows = read_meetings()
@@ -1020,6 +1087,7 @@ def update_meeting(base, **changes):
     return None
 
 
+@_synchronized(_meeting_lock)
 def delete_meetings(bases):
     """Drop the rows that exist and the files they point at.
 

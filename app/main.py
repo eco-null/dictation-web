@@ -1,4 +1,5 @@
 import os
+from contextlib import asynccontextmanager
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request
@@ -66,14 +67,21 @@ def _same_origin(request):
     return True
 
 
+@asynccontextmanager
+async def lifespan(app):
+    auth.password()
+    yield
+
+
 def create_app():
-    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     templates = Jinja2Templates(directory=TEMPLATE_DIR)
     templates.env.globals["t"] = i18n.t
     templates.env.globals["lang"] = i18n.language
+    templates.env.globals["ui_strings"] = i18n.web_strings
     templates.env.filters["markdown"] = _markdown_html
     app.state.templates = templates
 
@@ -93,7 +101,10 @@ def create_app():
             if path.startswith("/api/"):
                 return JSONResponse({"detail": "Not authenticated"}, status_code=401)
             return RedirectResponse("/login", status_code=303)
-        return await call_next(request)
+        response = await call_next(request)
+        if not path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.middleware("http")
     async def csrf_protect(request: Request, call_next):
@@ -117,7 +128,7 @@ def create_app():
     @app.get("/healthz")
     def healthz():
         try:
-            cfg.Config()
+            cfg.Config(set_language=False)
             return {"ok": True}
         except Exception:
             return JSONResponse({"ok": False, "error": "settings unavailable"},

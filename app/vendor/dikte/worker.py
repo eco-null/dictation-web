@@ -5,6 +5,8 @@ aşamaları `stage` sinyaliyle yayar. `ask=True` transkripti ajan'a gönderir.
 """
 
 import os
+import shutil
+import uuid
 import sys
 import time
 
@@ -23,9 +25,8 @@ CHUNK_SECONDS = LEVEL_FRAMES / RATE
 
 
 class Pipeline:
-    stage = Signal()
-
     def __init__(self, conf):
+        self.stage = Signal()
         self.conf = conf
 
     def run(self, wav_path, duration, rms_values=(), ask=False):
@@ -57,10 +58,20 @@ class Pipeline:
 
         text = raw
         warning = ""
-        if (conf["assistant_cleanup"] if ask else conf["cleanup_enabled"]):
+        translate_to = conf["translate_to"] if not ask else ""
+        cleanup_enabled = conf["assistant_cleanup"] if ask else conf["cleanup_enabled"]
+        if cleanup_enabled or translate_to:
             self.stage.emit(t("Cleaning up…"))
             try:
-                text = cleanup.run(raw, conf, conf.cleanup_prompt())
+                prompt = conf.cleanup_prompt()
+                if translate_to:
+                    instruction = conf["writing_style"] if cleanup_enabled else ""
+                    prompt = ("Translate the transcript faithfully into " + translate_to
+                              + ". Return only the translation. Preserve names and facts. "
+                              + instruction)
+                elif not ask and conf["writing_style"]:
+                    prompt += "\nApply these writing preferences: " + conf["writing_style"]
+                text = cleanup.run(raw, conf, prompt)
             except api.ApiError as exc:
                 text = raw
                 warning = str(exc)
@@ -74,19 +85,41 @@ class Pipeline:
             text, denied = assistant.ask(question, conf, on_stage=self.stage.emit)
             warning = "\n".join(x for x in (warning, denied) if x)
 
-        cfg.append_history({
+        recording = ""
+        kept_audio = None
+        if conf["keep_audio"]:
+            folder = cfg.DATA_DIR / "recordings"
+            folder.mkdir(parents=True, exist_ok=True)
+            recording = f"{uuid.uuid4().hex}.wav"
+            kept_audio = folder / recording
+            try:
+                shutil.copyfile(wav_path, kept_audio)
+            except OSError:
+                self._discard(kept_audio)
+                raise
+
+        entry = {
             "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
             "duration": round(duration, 1),
             "elapsed": round(time.monotonic() - started, 1),
             "model": target.model,
-            "cleanup_model": cleanup.model(conf) if conf["cleanup_enabled"] else "",
+            "cleanup_model": cleanup.model(conf) if cleanup_enabled or translate_to else "",
             "cleanup_error": warning,
             "mode": "ask" if ask else "",
             "question": question,
-            "assistant_model": conf["assistant_model"] if ask else "",
+            "assistant_model": conf.assistant_target().model if ask else "",
             "raw": raw,
+            "recording": recording,
+            "translate_to": translate_to,
             "text": text,
-        })
+        }
+        try:
+            cfg.append_history(entry)
+        except OSError:
+            if kept_audio is not None:
+                self._discard(kept_audio)
+            raise
+        self.history_entry = entry
         try:
             cfg.trim_history(conf["history_limit"])
         except OSError as exc:

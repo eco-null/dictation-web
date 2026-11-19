@@ -103,8 +103,9 @@ class Hallucinations(DikteTest):
     def test_a_stock_phrase_from_a_short_clip(self):
         self.assertTrue(vad.looks_like_hallucination("Altyazı M.K.", 2.0))
         self.assertTrue(vad.looks_like_hallucination("Thanks for watching!", 2.0))
-        self.assertTrue(vad.looks_like_hallucination("Thank you", 2.0))
-        self.assertTrue(vad.looks_like_hallucination("Thank you very much", 2.0))
+        self.assertFalse(vad.looks_like_hallucination("Thank you", 2.0))
+        self.assertTrue(vad.looks_like_hallucination("Çeviri ve Altyazı M.K.", 2.0))
+        self.assertFalse(vad.looks_like_hallucination("Thank you very much", 2.0))
 
     def test_the_same_phrase_repeated(self):
         self.assertTrue(vad.looks_like_hallucination(
@@ -127,7 +128,8 @@ class Hallucinations(DikteTest):
                 self.assertTrue(vad.looks_like_hallucination(text, 2.0))
 
     def test_the_boundary_is_the_max_duration(self):
-        self.assertTrue(vad.looks_like_hallucination("you", 6.0))
+        self.assertTrue(vad.looks_like_hallucination("thanks for watching", 6.0))
+        self.assertFalse(vad.looks_like_hallucination("you", 6.0))
         self.assertFalse(vad.looks_like_hallucination("you", 6.1))
 
 if __name__ == "__main__":

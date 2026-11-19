@@ -1,0 +1,7 @@
+{% macro upload() %}
+<div class="dropzone" data-dropzone>
+  <svg viewBox="0 0 24 24" width="35" height="35" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4m-5 5 5-5 5 5M4 16v4h16v-4"/></svg>
+  <label for="upload-file" data-file-label>{{ t('Drop an audio or video file') }}</label>
+  <input id="upload-file" type="file" accept="audio/*,video/*,.mkv,.ogg,.opus,.webm" name="file" required>
+</div>
+{% endmacro %}

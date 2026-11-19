@@ -29,6 +29,14 @@ class Timestamps(unittest.TestCase):
         self.assertEqual(ft.srt_timestamp(-3), "00:00:00,000")
 
 class ToSrt(unittest.TestCase):
+    def test_long_cue_wraps_without_changing_timing_or_words(self):
+        text = "Here is a longer subtitle that wraps across separate lines without losing any words."
+        result = ft.to_srt("[00:01] " + text, [(1.25, 3.5, text)], wrap=True)
+        _, timing, *lines = result.splitlines()
+        self.assertEqual(timing, "00:00:01,250 --> 00:00:03,500")
+        self.assertTrue(all(len(line) <= 42 for line in lines))
+        self.assertEqual(" ".join(lines), text)
+
     def test_nothing_to_do(self):
         self.assertEqual(ft.to_srt("", []), "")
         self.assertEqual(ft.to_srt("no stamps here", []), "")

@@ -5,8 +5,10 @@ Masaüstünün Claude/Codex CLI yolları webapp'e taşınmaz.
 """
 
 import json
+from contextlib import nullcontext
 import os
 import time
+import threading
 
 import api
 import config as cfg
@@ -14,8 +16,9 @@ import ggml
 from i18n import t
 
 SESSION_FILE = cfg.DATA_DIR / "assistant.json"
-PROVIDERS = ("openai", "groq", "openrouter", "omniroute", "local")
+PROVIDERS = ("openai", "groq", "openrouter", "omniroute", "custom", "local")
 MAX_HISTORY = 24
+_session_lock = threading.Lock()
 
 
 class AssistantError(Exception):
@@ -33,7 +36,7 @@ def provider(conf):
 
 def display_name(conf):
     return {"openai": "OpenAI", "groq": "Groq", "openrouter": "OpenRouter",
-            "omniroute": "OmniRoute", "local": "Local llama.cpp"}.get(
+            "omniroute": "OmniRoute", "custom": "Custom server", "local": "Local llama.cpp"}.get(
                 provider(conf), provider(conf))
 
 
@@ -107,43 +110,31 @@ def ask(prompt, conf, on_stage=None, should_stop=None, provider="", model=""):
     name = provider or conf["assistant_provider"]
     if name not in PROVIDERS:
         name = "openrouter"
-    return _ask_http(prompt, conf, name, on_stage)
+    with _session_lock:
+        return _ask_http(prompt, conf, name, on_stage, model)
 
 
-def _ask_http(prompt, conf, name, on_stage):
+def _ask_http(prompt, conf, name, on_stage, model=""):
     if on_stage:
         on_stage(t("Thinking…"))
-    history = read_messages(name, conf["assistant_session_minutes"] * 60)
+    retention = conf["assistant_session_minutes"] * 60
+    history = read_messages(name, retention) if retention > 0 else []
     messages = history + [{"role": "user", "content": prompt}]
-    service = {"openai": "OpenAI", "groq": "Groq",
-               "openrouter": "OpenRouter", "omniroute": "OmniRoute",
-               "local": "Local llama.cpp"}.get(name, name)
-    if name == "local":
-        base_url = api.serving(ggml.llm)
-        key = ""
-        model = conf["assistant_local_model"]
-        key_required = False
-        reasoning = conf["assistant_local_reasoning"]
-    else:
-        base_url = conf[f"assistant_{name}_url"]
-        key = conf[f"assistant_{name}_key"]
-        if not key:
-            env_name = {"openai": "OPENAI_API_KEY", "groq": "GROQ_API_KEY",
-                        "openrouter": "OPENROUTER_API_KEY",
-                        "omniroute": "OMNIROUTE_API_KEY"}.get(name)
-            key = os.environ.get(env_name, "") if env_name else ""
-        model = conf[f"assistant_{name}_model"]
-        key_required = name not in ("omniroute",)
-        reasoning = conf["assistant_reasoning"]
-    api._assert_safe_url(base_url)
+    target = conf.target_for("assistant", name)
+    local = name == "local"
+    engine = ggml.configured_llm(conf, "assistant") if local else nullcontext()
     try:
-        answer = api.chat(
-            messages, key, model=model, system_prompt=conf.assistant_prompt(),
-            reasoning=reasoning, base_url=base_url,
-            timeout=conf["assistant_timeout"], provider=name,
-            service=service, key_required=key_required,
-        )
-    except api.ApiError as exc:
+        with engine as server:
+            answer = api.chat(
+                messages, target.api_key, model=target.model if local else model or target.model,
+                system_prompt=conf.assistant_prompt(),
+                reasoning=conf["assistant_local_reasoning" if local else "assistant_reasoning"],
+                base_url=api.serving(server) if local else target.base_url,
+                timeout=conf["assistant_timeout"], provider="local-llm" if local else name,
+                service=target.service, key_required=name not in ("omniroute", "custom", "local"),
+            )
+    except (api.ApiError, ggml.LocalError) as exc:
         raise AssistantError(str(exc)) from exc
-    write_session(name, messages=messages + [{"role": "assistant", "content": answer}])
+    if retention > 0:
+        write_session(name, messages=messages + [{"role": "assistant", "content": answer}])
     return answer, ""

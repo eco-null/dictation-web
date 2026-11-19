@@ -1,19 +1,15 @@
 {% extends "base.html" %}
-{% block head %}<meta http-equiv="Cache-Control" content="no-store">{% endblock %}
+{% block title %}{{ t('Log in') }}{% endblock %}
 {% block content %}
 <section class="auth">
-  <div class="card auth-card">
-    <div class="auth-brand">
-      <img src="/static/logo.png" alt="Dikte" width="48" class="auth-logo">
-      <h1>Dikte</h1>
-    </div>
-    <p class="muted">{{ t("Sign in to continue") }}</p>
+  <div class="auth-card">
+    <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 10v4m4-7v10m5-14v18m5-14v10m4-7v4"/></svg></span>
+    <h1>Dikte Web</h1>
+    <p class="muted">{{ t('Sign in to continue') }}</p>
     <form method="post" action="/login" class="stack">
-      <label class="field">{{ t("Password") }}
-        <input type="password" name="password" autofocus required autocomplete="current-password">
-      </label>
-      {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
-      <button class="btn btn-primary btn-block" type="submit">{{ t("Log in") }}</button>
+      <label class="field">{{ t('Password') }}<input type="password" name="password" autofocus required autocomplete="current-password"></label>
+      {% if error %}<p class="warn" role="alert">{{ t(error) }}</p>{% endif %}
+      <button class="btn btn-primary" type="submit">{{ t('Log in') }}</button>
     </form>
   </div>
 </section>

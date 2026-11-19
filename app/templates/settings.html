@@ -1,451 +1,116 @@
 {% extends "base.html" %}
-{% block head %}<meta http-equiv="Cache-Control" content="no-store">{% endblock %}
+{% block title %}{{ t('Settings') }}{% endblock %}
+{% block head %}<script src="/static/settings.js?v=5" defer></script>{% endblock %}
 {% block content %}
-{% macro field_input(key) %}
-{% if key in fields %}
-<label class="field">{% if key == 'ui_language' %}{{ t("Interface language") }}{% elif key == 'language' %}{{ t("Speech language") }}{% else %}{{ t(key) }}{% endif %}
-  {% if fields[key][0] == 'bool' %}
+{% macro field_input(key, label="") %}
+{% set kind, choices = fields[key] %}
+{% set value = settings[key] %}
+<label class="field">{{ t(label or key) }}
+  {% if kind == 'bool' %}
   <select name="{{ key }}" data-kind="bool">
-    <option value="on" {% if settings[key] %}selected{% endif %}>{{ t("On") }}</option>
-    <option value="off" {% if not settings[key] %}selected{% endif %}>{{ t("Off") }}</option>
+    <option value="on" {% if value %}selected{% endif %}>{{ t('On') }}</option>
+    <option value="off" {% if not value %}selected{% endif %}>{{ t('Off') }}</option>
   </select>
   {% elif key == 'mic_target' %}
   <span class="model-pair">
-    <select name="{{ key }}" data-mic-select>
-      {% if settings[key] %}<option value="{{ settings[key] }}" selected>{{ settings[key] }}</option>{% endif %}
-      <option value="__custom__">{{ t("Custom…") }}</option>
+    <select name="{{ key }}" id="mic-select">
+      <option value="">{{ t('Default microphone') }}</option>
+      {% if value %}<option value="{{ value }}" selected>{{ t('Saved microphone') }}</option>{% endif %}
     </select>
-    <input name="{{ key }}" type="text" value="{{ settings[key] or '' }}" placeholder="{{ t(key) }}" data-mic-input{% if settings[key] %} hidden{% endif %}>
   </span>
-  {% elif fields[key][0] == 'select' %}
+  {% elif kind == 'select' %}
   <select name="{{ key }}">
-    {% for choice in fields[key][1] %}
-    <option value="{{ choice }}" {% if settings[key] == choice %}selected{% endif %}>{{ choice }}</option>
-    {% endfor %}
+    {% for choice in choices %}<option value="{{ choice }}" {% if value == choice %}selected{% endif %}>{{ t(choice or 'Use default') }}</option>{% endfor %}
   </select>
-  {% elif key.endswith('_prompt') %}
-  <textarea name="{{ key }}" rows="2" placeholder="{{ t(key) }}">{{ settings[key] or '' }}</textarea>
+  {% elif key in masked %}
+  <input name="{{ key }}" type="password" value="" placeholder="{{ value or t('API key') }}" autocomplete="off" data-secret>
+  {% elif key.endswith('_prompt') or key in ('dictionary', 'writing_style', 'meeting_participants') %}
+  <textarea name="{{ key }}" rows="3" placeholder="{{ t('Uses the built-in prompt when empty') if key.endswith('_prompt') else '' }}">{{ value or '' }}</textarea>
   {% else %}
-  <input name="{{ key }}" type="text" value="{{ settings[key] or '' }}" placeholder="{{ t(key) }}">
+  <input name="{{ key }}" type="{{ 'number' if kind in ('int', 'float') else 'text' }}"{% if kind == 'float' %} step="any"{% endif %} value="{{ value if value is not none else '' }}">
   {% endif %}
 </label>
-{% endif %}
 {% endmacro %}
-<section class="card">
-  <div class="settings-head">
-    <h1>{{ t("Settings") }}</h1>
-    <span class="save-badge" id="save-status" role="status" aria-live="polite">{{ t("Autosaving…") }}</span>
-  </div>
-  <form id="settings-form" class="settings-form">
-    {% for service in services %}
-    <fieldset class="settings-section" data-service="{{ service.key }}">
-      <legend>{{ t(service.title) }}</legend>
-      <div class="provider-select">
-        <label class="field">{{ t("Provider") }}
-          <select name="{{ service.key }}_provider" class="provider-select-el"
-                  data-service="{{ service.key }}">
-            {% for p in service.providers %}
-            <option value="{{ p.name }}"
-              {% if settings[service.key ~ '_provider'] == p.name %}selected{% endif %}>{{ p.name }}</option>
-            {% endfor %}
-          </select>
-        </label>
-      </div>
-      {% for p in service.providers %}
-      <div class="provider-fields" data-service="{{ service.key }}" data-provider="{{ p.name }}"
-           {% if settings[service.key ~ '_provider'] != p.name %}hidden{% endif %}>
-        {% for suffix in ['url', 'key', 'model'] %}
-        {% set fk = service.key ~ '_' ~ p.name ~ '_' ~ suffix %}
-        {% if fk in fields %}
-        <label class="field">{{ t(fk) }}
-          {% if fk in masked %}
-          <input name="{{ fk }}" type="text" value="" placeholder="{{ settings[fk] or t(fk) }}">
-          {% elif suffix == 'model' and p.name in ['openai', 'groq', 'openrouter'] %}
-          <span class="model-pair">
-            <select name="{{ fk }}" data-model-select data-service="{{ service.key }}"
-                    data-provider="{{ p.name }}" data-current="{{ settings[fk] or '' }}">
-              {% if settings[fk] %}<option value="{{ settings[fk] }}" selected>{{ settings[fk] }}</option>{% endif %}
-              <option value="__custom__">{{ t("Custom…") }}</option>
-            </select>
-            <input name="{{ fk }}" type="text" value="{{ settings[fk] or '' }}" placeholder="{{ t(fk) }}" data-model-input{% if settings[fk] %} hidden{% endif %}>
-          </span>
-          {% else %}
-          <input name="{{ fk }}" type="text" value="{{ settings[fk] or '' }}" placeholder="{{ t(fk) }}">
-          {% endif %}
-        </label>
-        {% endif %}
-        {% endfor %}
-        {% for lk in (['threads','gpu','preload','context','reasoning'] if p.name == 'local' else []) %}
-        {% set fk = service.key ~ '_local_' ~ lk %}
-        {% if fk in fields %}
-        <label class="field">{{ t(fk) }}
-          {% if fields[fk][0] == 'bool' %}
-          <select name="{{ fk }}" data-kind="bool">
-            <option value="on" {% if settings[fk] %}selected{% endif %}>{{ t("On") }}</option>
-            <option value="off" {% if not settings[fk] %}selected{% endif %}>{{ t("Off") }}</option>
-          </select>
-          {% else %}
-          <input name="{{ fk }}" type="text" value="{{ settings[fk] or '' }}" placeholder="{{ t(fk) }}">
-          {% endif %}
-        </label>
-        {% endif %}
-        {% endfor %}
-      </div>
+<header class="page-head">
+  <div><h1>{{ t('Settings') }}</h1></div>
+  <div class="settings-save"><span id="save-status" class="stage" role="status"></span><button class="btn btn-primary" form="settings-form" id="save-settings" disabled>{{ t('Save changes') }}</button></div>
+</header>
+<nav class="settings-nav" aria-label="{{ t('Settings sections') }}">
+  <a href="#themes">{{ t("Themes") }}</a>
+  {% for service in services %}<a href="#{{ service.key }}">{{ t(service.title) }}</a>{% endfor %}
+  <a href="#general">{{ t('General') }}</a>
+  <a href="#models">{{ t('Local models') }}</a>
+</nav>
+<form id="settings-form" class="settings-form">
+  <fieldset class="settings-section" id="themes">
+    <legend>{{ t("Themes") }}</legend>
+    <div class="theme-options">
+      {% for value, label in themes.items() %}
+      <label class="theme-choice">
+        <input type="radio" name="ui_theme" value="{{ value }}"{% if ui_theme == value %} checked{% endif %}>
+        <span class="theme-swatches" data-palette="{{ value }}" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span>{{ t(label) }}</span>
+      </label>
       {% endfor %}
-      {% if service.key == 'transcribe' %}
-      {{ field_input('language') }}
-      {% endif %}
-      {% if service.key == 'meeting' %}
-      <div class="meeting-options settings-grid">
-        {% for key in meeting_keys %}{{ field_input(key) }}{% endfor %}
+    </div>
+  </fieldset>
+  {% for service in services %}
+  <fieldset class="settings-section" id="{{ service.key }}" data-service="{{ service.key }}">
+    <legend>{{ t(service.title) }}</legend>
+    <div class="provider-select">
+      <label class="field">{{ t('Provider') }}
+        <select name="{{ service.key }}_provider" class="provider-select-el">
+          {% for p in service.providers %}<option value="{{ p.name }}"
+            {% if settings[service.key ~ '_provider'] == p.name %}selected{% endif %}>{{ t(p.label) }}</option>{% endfor %}
+        </select>
+      </label>
+    </div>
+    {% for p in service.providers %}
+    <div class="provider-fields" data-provider="{{ p.name }}"
+         {% if settings[service.key ~ '_provider'] != p.name %}hidden{% endif %}>
+      {% set prefix = service.key ~ '_' ~ p.name ~ '_' %}
+      {% if p.name == 'local' %}
+      {{ field_input(prefix ~ 'model', 'Model') }}
+      {{ field_input(prefix ~ 'threads', 'Threads') }}
+      {{ field_input(prefix ~ 'gpu', 'Use GPU') }}
+      {{ field_input(prefix ~ 'preload', 'Preload model') }}
+      {% for option, label in [('context', 'Context size'), ('reasoning', 'Reasoning')] %}
+      {% if prefix ~ option in fields %}{{ field_input(prefix ~ option, label) }}{% endif %}
+      {% endfor %}
+      {% else %}
+      {{ field_input(prefix ~ 'url', 'Base URL') }}
+      <div class="stack secret-field">
+        {{ field_input(prefix ~ 'key', 'API key') }}
+        <button class="btn btn-sm btn-ghost" type="button" data-clear-key="{{ prefix }}key" {% if not settings[prefix ~ 'key'] %}hidden{% endif %}>{{ t('Remove saved key') }}</button>
       </div>
+      {% set model = prefix ~ 'model' %}
+      <label class="field">{{ t('Model') }}
+        <input name="{{ model }}" value="{{ settings[model] }}" list="catalog-{{ model }}" data-model-input>
+        <datalist id="catalog-{{ model }}"></datalist>
+      </label>
+      <button class="btn btn-sm model-refresh" type="button" data-model-refresh>{{ t('Load model suggestions') }}</button>
+      <p class="stage" role="status" data-model-stage></p>
       {% endif %}
-    </fieldset>
+    </div>
     {% endfor %}
-
-    <fieldset class="settings-section" data-service="general">
-      <legend>{{ t("General") }}</legend>
-      <div class="settings-grid">
-        {% for key in general_keys %}{{ field_input(key) }}{% endfor %}
-      </div>
-    </fieldset>
-  </form>
-</section>
-
-<section class="card" data-models>
+    <div class="settings-grid">
+      {% for key, label in service_keys.get(service.key, []) %}{{ field_input(key, label) }}{% endfor %}
+    </div>
+  </fieldset>
+  {% endfor %}
+  <fieldset class="settings-section" id="general">
+    <legend>{{ t('General') }}</legend>
+    <div class="settings-grid">
+      {% for key, label in general_keys %}{{ field_input(key, label) }}{% endfor %}
+      <div><button type="button" class="btn btn-sm" id="detect-microphones">{{ t('Find microphones') }}</button><p class="stage" id="mic-stage" role="status"></p></div>
+    </div>
+  </fieldset>
+</form>
+<section class="card" id="models">
   <details class="models-details">
-    <summary>{{ t("Local models") }}</summary>
+    <summary>{{ t('Local models') }}</summary>
     <p id="models-stage" class="stage" role="status"></p>
-    <div id="models-loading" class="muted">{{ t("Loading…") }}</div>
     <div id="models-list"></div>
   </details>
 </section>
-<script>
-  function applyProviderVisibility() {
-    document.querySelectorAll("[data-service][data-provider]").forEach((block) => {
-      const sel = document.querySelector(
-        `select.provider-select-el[data-service="${block.dataset.service}"]`);
-      const show = sel && sel.value === block.dataset.provider;
-      block.hidden = !show;
-    });
-  }
-
-  function syncPair(select, inputSel) {
-    const input = select.parentElement.querySelector(inputSel);
-    if (!input) return;
-    const custom = select.value === "__custom__";
-    select.hidden = custom;
-    input.hidden = !custom;
-    select.disabled = custom;
-    input.disabled = !custom;
-    if (!custom) input.value = select.value;
-  }
-
-  async function loadProviderModels(select) {
-    const svc = select.dataset.service || "";
-    const prov = select.dataset.provider || "";
-    const current = select.dataset.current || "";
-    const chosen = select.value || current;
-    let models = [];
-    try {
-      const resp = await fetch("/api/models/list?provider=" + encodeURIComponent(prov) +
-                               "&svc=" + encodeURIComponent(svc));
-      if (resp.ok) {
-        const data = await resp.json();
-        models = Array.isArray(data.models) ? data.models : [];
-      }
-    } catch (err) { models = []; }
-    const custom = new Option("{{ t("Custom…") }}", "__custom__");
-    select.textContent = "";
-    // The stored model must stay selected even when the provider has no
-    // listing (no key, offline) or the model is not in the current list.
-    // `chosen` keeps whatever the user picked while the list was loading,
-    // so a slow fetch cannot silently revert their choice.
-    if (chosen && models.indexOf(chosen) === -1) {
-      select.appendChild(new Option(chosen, chosen, true, true));
-    }
-    models.forEach((m) => select.appendChild(new Option(m, m)));
-    select.appendChild(custom);
-    select.value = chosen || "__custom__";
-    syncPair(select, "input[data-model-input]");
-  }
-
-  function refreshProviderModels() {
-    document.querySelectorAll("select[data-model-select]").forEach((sel) => {
-      const selSvc = document.querySelector(
-        `select.provider-select-el[data-service="${sel.dataset.service}"]`);
-      if (selSvc && selSvc.value === sel.dataset.provider) loadProviderModels(sel);
-    });
-  }
-
-  async function loadMicDevices() {
-    const micSelect = document.querySelector("select[data-mic-select]");
-    const micInput = micSelect
-      ? micSelect.parentElement.querySelector("input[data-mic-input]") : null;
-    if (!micSelect || !micInput) return;
-    const current = micInput.value;
-    let devices = [];
-    try {
-      if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
-        devices = (await navigator.mediaDevices.enumerateDevices())
-          .filter((d) => d.kind === "audioinput");
-      }
-    } catch (err) { devices = []; }
-    if (!devices.length) {
-      micSelect.hidden = true;
-      micSelect.disabled = true;
-      micInput.hidden = false;
-      micInput.disabled = false;
-      return;
-    }
-    const custom = new Option("{{ t("Custom…") }}", "__custom__");
-    micSelect.textContent = "";
-    devices.forEach((d) => {
-      const label = d.label || d.deviceId || "Microphone";
-      micSelect.appendChild(new Option(label, d.deviceId || label));
-    });
-    micSelect.appendChild(custom);
-    const matches = devices.some(
-      (d) => current && current === (d.deviceId || d.label || "Microphone"));
-    micSelect.value = matches ? current : "__custom__";
-    syncPair(micSelect, "input[data-mic-input]");
-  }
-
-  document.querySelectorAll("select.provider-select-el").forEach((sel) => {
-    sel.addEventListener("change", () => { applyProviderVisibility(); refreshProviderModels(); scheduleSave(); });
-  });
-  document.querySelectorAll("select[data-model-select]").forEach((sel) => {
-    sel.addEventListener("change", () => { syncPair(sel, "input[data-model-input]"); scheduleSave(); });
-  });
-  document.querySelectorAll("select[data-mic-select]").forEach((sel) => {
-    sel.addEventListener("change", () => { syncPair(sel, "input[data-mic-input]"); scheduleSave(); });
-  });
-  applyProviderVisibility();
-  refreshProviderModels();
-  loadMicDevices();
-
-  const form = document.getElementById("settings-form");
-  const status = document.getElementById("save-status");
-  let saveTimer = null;
-  let dirty = false;
-
-  function setStatus(text, ok, err) {
-    status.textContent = text;
-    status.classList.toggle("save-ok", !!ok);
-    status.classList.toggle("save-err", !!err);
-  }
-
-  function collectSettings() {
-    const out = {};
-    // A model-pair is a <select> and a hidden <input> sharing one name; the
-    // input carries the value the moment the user typed a custom model, the
-    // select the value the rest of the time. Only the active one must win, so
-    // a disabled sibling (which holds a stale value) is skipped.
-    const seen = new Set();
-    const take = (name, value) => {
-      out[name] = value;
-      if (form.querySelector(`[name="${name}"][data-kind="bool"]`)) {
-        out[name] = value === "on";
-      }
-      seen.add(name);
-    };
-    for (const el of form.elements) {
-      if (!el.name || seen.has(el.name)) continue;
-      if (el.closest(".model-pair")) {
-        const pair = el.closest(".model-pair");
-        const select = pair.querySelector("select");
-        const input = pair.querySelector("input");
-        const active = input && !input.disabled ? input : select;
-        if (active) take(el.name, active.value);
-        seen.add(el.name);
-      } else {
-        take(el.name, el.value);
-      }
-    }
-    return out;
-  }
-
-  async function saveNow() {
-    clearTimeout(saveTimer);
-    saveTimer = null;
-    if (!dirty) return;
-    dirty = false;
-    setStatus("{{ t("Saving…") }}");
-    try {
-      const resp = await fetch("/api/settings", {
-        method: "POST",
-        keepalive: true,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ settings: collectSettings() }),
-      });
-      if (resp.ok) {
-        setStatus("{{ t("Saved successfully.") }}", true);
-      } else {
-        dirty = true;
-        const detail = (await resp.json().catch(() => null));
-        setStatus(detail && detail.detail ? String(detail.detail) : "{{ t("Save failed: {err}") }}".replace("{err}", String(resp.status)), false, true);
-      }
-    } catch (err) {
-      dirty = true;
-      setStatus("{{ t("Save failed: {err}") }}".replace("{err}", String(err)), false, true);
-    }
-  }
-
-  function scheduleSave() {
-    dirty = true;
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(saveNow, 300);
-  }
-
-  form.addEventListener("input", scheduleSave);
-  form.addEventListener("change", scheduleSave);
-  form.addEventListener("submit", (e) => { e.preventDefault(); saveNow(); });
-  function flushOnLeave() {
-    if (!dirty) return;
-    try {
-      if (navigator.sendBeacon) {
-        navigator.sendBeacon("/api/settings",
-          new Blob([JSON.stringify({ settings: collectSettings() })],
-                   { type: "application/json" }));
-        dirty = false;
-      } else {
-        saveNow();
-      }
-    } catch (err) { saveNow(); }
-  }
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) flushOnLeave();
-  });
-  window.addEventListener("pagehide", flushOnLeave);
-  window.addEventListener("beforeunload", flushOnLeave);
-
-  async function loadModels() {
-    const list = document.getElementById("models-list");
-    const loading = document.getElementById("models-loading");
-    loading.hidden = false;
-    const resp = await fetch("/api/models");
-    const data = await resp.json();
-    loading.hidden = true;
-    list.innerHTML = "";
-    if (data.whisper_error) list.appendChild(notice(data.whisper_error));
-    if (data.llm_error) list.appendChild(notice(data.llm_error));
-    modelGroup(list, "Programs", (data.programs || []).map((p) => ({
-      label: p.name + (p.system ? " (system)" : "") + (p.installed ? " — installed " + (p.version || "") : ""),
-      installed: p.installed,
-      install: () => installModel({ kind: "program", name: p.name }),
-    })), 8);
-    modelGroup(list, "Whisper models", (data.whisper_models || []).map((m) => ({
-      label: m.name + (m.installed ? " (installed)" : ""),
-      installed: m.installed,
-      install: () => installModel({ kind: "whisper", name: m.name }),
-      remove: m.installed ? () => deleteModel(m.path) : null,
-    })), 6);
-    for (const repo of data.llm || []) {
-      modelGroup(list, repo.repo, (repo.quants || []).map((q) => ({
-        label: q.name + (q.installed ? " (installed)" : ""),
-        installed: q.installed,
-        install: () => installModel({ kind: "llm", name: q.name, repo: repo.repo }),
-        remove: q.installed ? () => deleteModel(q.path) : null,
-      })), 5);
-    }
-  }
-
-  function modelGroup(container, title, rows, visible) {
-    const det = document.createElement("details");
-    det.className = "model-group";
-    det.open = true;
-    const sum = document.createElement("summary");
-    const head = document.createElement("span");
-    head.textContent = title + " (" + rows.length + ")";
-    sum.appendChild(head);
-    det.appendChild(sum);
-    const body = document.createElement("div");
-    body.className = "model-group-body";
-    const shown = rows.slice(0, visible);
-    const hidden = rows.slice(visible);
-    for (const r of shown) body.appendChild(modelRow(r));
-    if (hidden.length) {
-      const more = document.createElement("button");
-      more.className = "btn btn-ghost btn-sm";
-      more.textContent = "Show " + hidden.length + " more";
-      more.addEventListener("click", () => {
-        for (const r of hidden) body.appendChild(modelRow(r));
-        more.remove();
-      });
-      body.appendChild(more);
-    }
-    det.appendChild(body);
-    container.appendChild(det);
-  }
-
-  function modelRow(r) {
-    const row = document.createElement("div");
-    row.className = "model-row";
-    row.appendChild(el("span", r.label));
-    const acts = document.createElement("div");
-    acts.className = "row";
-    if (r.installed && r.remove) {
-      const b = document.createElement("button");
-      b.className = "btn btn-sm btn-danger";
-      b.textContent = "Delete";
-      b.addEventListener("click", r.remove);
-      acts.appendChild(b);
-    }
-    if (!r.installed && r.install) {
-      const b = document.createElement("button");
-      b.className = "btn btn-sm btn-primary";
-      b.textContent = "Install";
-      b.addEventListener("click", r.install);
-      acts.appendChild(b);
-    }
-    if (acts.childNodes.length) row.appendChild(acts);
-    return row;
-  }
-
-  function el(tag, text) {
-    const n = document.createElement(tag);
-    n.textContent = text;
-    return n;
-  }
-  function notice(text) {
-    const p = document.createElement("p");
-    p.className = "warn";
-    p.textContent = text;
-    return p;
-  }
-  async function installModel(payload) {
-    const stage = document.getElementById("models-stage");
-    stage.textContent = "Starting…";
-    const resp = await fetch("/api/models/install", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    if (resp.status === 409) { stage.textContent = "Busy, one job at a time"; return; }
-    if (!resp.ok) { stage.textContent = (await resp.json()).detail || resp.status; return; }
-    const { job_id } = await resp.json();
-    const tick = async () => {
-      const job = await (await fetch("/api/jobs/" + job_id)).json();
-      stage.textContent = job.status === "running" ? (job.stage || "Working…") : job.status;
-      if (job.status === "done" || job.status === "failed") {
-        if (job.status === "failed") stage.textContent = job.error || "Failed";
-        loadModels();
-        return;
-      }
-      setTimeout(tick, 2000);
-    };
-    tick();
-  }
-  async function deleteModel(path) {
-    const stage = document.getElementById("models-stage");
-    const resp = await fetch("/api/models/delete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path }),
-    });
-    stage.textContent = resp.ok ? "Deleted." : (await resp.json()).detail || resp.status;
-    loadModels();
-  }
-  loadModels();
-</script>
 {% endblock %}

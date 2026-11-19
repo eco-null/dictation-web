@@ -17,17 +17,23 @@ import unicodedata
 
 # Stock phrases the models produce when handed silence. Kept deliberately
 # narrow: only sentences nobody dictates on purpose in a two-second clip.
+# Whisper does invent "you" and "bye" too, but people dictate both as whole
+# answers, so a single word never belongs here.
 HALLUCINATIONS = {
     "altyazi mk", "altyazi m k", "altyazi", "altyazilar",
     "abone olmayi unutmayin", "izlediginiz icin tesekkurler",
     "izlediginiz icin tesekkur ederim", "izlediginiz icin tesekkur ederiz",
     "kanalima abone olmayi unutmayin", "altyazi mk altyazi mk",
     "thanks for watching", "thank you for watching", "thanks for watching!",
-    "thank you", "thank you.", "thank you very much",
-    "please subscribe", "subscribe to my channel", "you", "bye",
+    "please subscribe", "subscribe to my channel",
     "mbc masr", "sous titres realises par la communaute damara org",
     "amara org community", "sous titrage st 501",
 }
+# Every word a Turkish subtitle credit is built from. Whisper strings these
+# together in new orders ("Çeviri ve Altyazı M.K.", "Altyazı ve Çeviri M.K."),
+# so a short clip made only of them, with the M.K. signature in it, is a credit
+# line nobody dictated, whatever the order.
+_CREDIT_WORDS = {"ceviri", "ve", "altyazi", "altyazilar", "mk", "m", "k"}
 _PUNCTUATION = re.compile(r"[^\w\s]", re.UNICODE)
 _SPACES = re.compile(r"\s+")
 
@@ -85,6 +91,13 @@ def is_silent(stats, silence_db=-55.0, margin_db=10.0, min_voiced_seconds=0.3):
     return False
 
 
+def _is_subtitle_credit(words):
+    if not set(words) <= _CREDIT_WORDS or not {"altyazi", "altyazilar"} & set(words):
+        return False
+    joined = " ".join(words)
+    return "mk" in words or "m k" in joined
+
+
 def _normalise(text):
     folded = unicodedata.normalize("NFKD", text.lower())
     folded = "".join(c for c in folded if not unicodedata.combining(c))
@@ -101,8 +114,10 @@ def looks_like_hallucination(text, duration_seconds, max_duration=6.0):
         return True
     if normalised in HALLUCINATIONS:
         return True
-    # "Altyazı M.K. Altyazı M.K. Altyazı M.K.": the same stock line repeated.
     words = normalised.split()
+    if _is_subtitle_credit(words):
+        return True
+    # "Altyazı M.K. Altyazı M.K. Altyazı M.K.": the same stock line repeated.
     for phrase in HALLUCINATIONS:
         parts = phrase.split()
         if len(parts) >= 2 and words and len(words) % len(parts) == 0:

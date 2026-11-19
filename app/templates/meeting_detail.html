@@ -1,12 +1,17 @@
 {% extends "base.html" %}
-{% block head %}<meta http-equiv="Cache-Control" content="no-store">{% endblock %}
+{% block title %}{{ meeting.title or t('Meetings') }}{% endblock %}
 {% block content %}
-<section class="card">
-  <h1>{{ meeting.title or meeting.ts }}</h1>
-  <p class="meta">{{ t("Model") }}: {{ meeting.model }} · {{ t("Status") }}: <span class="badge status-{{ meeting.status }}">{{ meeting.status }}</span></p>
-  {% if meeting.error %}<p class="error" role="alert">{{ meeting.error }}</p>{% endif %}
-  {% if doc %}<article class="minutes">{{ doc|markdown|safe }}</article>{% else %}
-  <p class="muted">{{ t("No transcript yet") }}</p>{% endif %}
-  <a class="btn" href="/meetings">{{ t("Back") }}</a>
+<a class="back-link" href="/meetings"><span aria-hidden="true">‹</span> {{ t('Meetings') }}</a>
+<header class="page-head">
+  <div><h1>{{ meeting.title or meeting.ts }}</h1><p>{{ meeting.ts }} · {{ t(meeting.status) }}{% if meeting.model %} · {{ meeting.model }}{% endif %}</p></div>
+  {% if doc %}<div class="row">
+    <button class="btn" data-copy data-target="#minutes-source">{{ t('Copy') }}</button>
+    <a class="btn btn-primary" href="/api/meetings/{{ meeting.base }}/download">{{ t('Download Markdown') }}</a>
+  </div>{% endif %}
+</header>
+{% if meeting.error %}<p class="warn" role="alert">{{ meeting.error }}</p>{% endif %}
+<section class="card minutes panel-body">
+  {% if doc %}<article>{{ doc|markdown|safe }}</article><textarea id="minutes-source" hidden>{{ doc }}</textarea>
+  {% else %}<p class="muted">{{ t('No transcript yet') }}</p>{% endif %}
 </section>
 {% endblock %}

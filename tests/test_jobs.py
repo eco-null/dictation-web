@@ -9,8 +9,18 @@ class Jobs(unittest.TestCase):
     def setUp(self):
         self.manager = jobs_module.JobManager(max_jobs=2)
 
+    def submit_and_wait(self, work):
+        job_id = self.manager.submit("t", work)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            job = self.manager.get(job_id)
+            if job is not None and job.status in ("done", "failed"):
+                return job_id
+            time.sleep(0.001)
+        self.fail("Job did not finish")
+
     def test_a_job_runs_and_records_result(self):
-        job_id = self.manager.submit("t", lambda emit: {"ok": True})
+        job_id = self.submit_and_wait(lambda emit: {"ok": True})
         job = self.manager.get(job_id)
         self.assertEqual(job.status, "done")
         self.assertEqual(job.result, {"ok": True})
@@ -18,7 +28,7 @@ class Jobs(unittest.TestCase):
     def test_a_failure_is_recorded(self):
         def boom(emit):
             raise RuntimeError("nope")
-        job_id = self.manager.submit("t", boom)
+        job_id = self.submit_and_wait(boom)
         job = self.manager.get(job_id)
         self.assertEqual(job.status, "failed")
         self.assertIn("nope", job.error)
@@ -36,7 +46,7 @@ class Jobs(unittest.TestCase):
         with self.assertRaises(jobs_module.BusyError):
             self.manager.submit("t", work)
         time.sleep(0.3)
-        second = self.manager.submit("t", lambda emit: 2)
+        second = self.submit_and_wait(lambda emit: 2)
         self.assertEqual(self.manager.get(second).status, "done")
 
     def test_emit_updates_the_stage(self):
@@ -44,17 +54,16 @@ class Jobs(unittest.TestCase):
             emit("halfway")
             return 1
 
-        job_id = self.manager.submit("t", work)
+        job_id = self.submit_and_wait(work)
         self.assertEqual(self.manager.get(job_id).stage, "halfway")
 
     def test_finished_jobs_over_the_limit_are_pruned(self):
-        first = self.manager.submit("t", lambda emit: 1)
-        second = self.manager.submit("t", lambda emit: 2)
-        third = self.manager.submit("t", lambda emit: 3)
-        time.sleep(0.3)
-        fourth = self.manager.submit("t", lambda emit: 4)
+        first = self.submit_and_wait(lambda emit: 1)
+        second = self.submit_and_wait(lambda emit: 2)
+        third = self.submit_and_wait(lambda emit: 3)
+        fourth = self.submit_and_wait(lambda emit: 4)
         self.assertIsNone(self.manager.get(first))
-        self.assertIsNotNone(self.manager.get(second))
+        self.assertIsNone(self.manager.get(second))
         self.assertIsNotNone(self.manager.get(third))
         self.assertIsNotNone(self.manager.get(fourth))
 
@@ -63,7 +72,7 @@ class Jobs(unittest.TestCase):
 
     def test_job_goes_queued_then_done(self):
         holder = {}
-        job_id = self.manager.submit("t", lambda emit: holder.setdefault("ran", True))
+        job_id = self.submit_and_wait(lambda emit: holder.setdefault("ran", True))
         first = self.manager.get(job_id)
         self.assertIn(first.status, ("queued", "running", "done"))
         self.assertIs(holder.get("ran"), True)
@@ -72,9 +81,8 @@ class Jobs(unittest.TestCase):
     def test_prune_keeps_at_most_max_jobs(self):
         ids = []
         for _ in range(5):
-            ids.append(self.manager.submit("t", lambda emit: 1))
-        time.sleep(0.2)
-        self.manager.submit("t", lambda emit: 0)
+            ids.append(self.submit_and_wait(lambda emit: 1))
+        self.submit_and_wait(lambda emit: 0)
         kept = [jid for jid in ids if self.manager.get(jid) is not None]
         self.assertLessEqual(len(kept), self.manager.max_jobs)
 
@@ -82,9 +90,9 @@ class Jobs(unittest.TestCase):
         def boom(emit):
             raise RuntimeError("x")
 
-        first = self.manager.submit("t", boom)
+        first = self.submit_and_wait(boom)
         self.assertEqual(self.manager.get(first).status, "failed")
-        second = self.manager.submit("t", lambda emit: 2)
+        second = self.submit_and_wait(lambda emit: 2)
         self.assertEqual(self.manager.get(second).status, "done")
 
 if __name__ == "__main__":
