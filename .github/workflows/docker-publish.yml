@@ -18,8 +18,8 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
           cache: pip
@@ -34,7 +34,7 @@ jobs:
 
       - name: Extract image metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: |
             ghcr.io/${{ github.repository }}
@@ -48,7 +48,7 @@ jobs:
             org.opencontainers.image.title=Dictation Web
 
       - name: Build the image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           load: true
@@ -66,6 +66,7 @@ jobs:
         run: |
           trap 'docker compose down --volumes' EXIT
           docker compose up -d --pull never --wait --wait-timeout 60
+          docker compose exec -T dikte-web test -s /app/LICENSE
           docker compose exec -T dikte-web ffmpeg -version
           password="$(docker compose exec -T dikte-web cat /data/share/dikte/web_password)"
           python .github/scripts/smoke_docker.py http://127.0.0.1:18245 <<< "$password"
@@ -74,7 +75,7 @@ jobs:
           python .github/scripts/smoke_docker.py http://127.0.0.1:18245 --verify-saved <<< "$password"
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
